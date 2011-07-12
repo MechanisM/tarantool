@@ -9,6 +9,9 @@
  * release.
  */
 #define TARANTOOL_VERSION "@TARANTOOL_VERSION@"
+#define TARANTOOL_VERSION_MAJOR @TARANTOOL_VERSION_MAJOR@
+#define TARANTOOL_VERSION_MINOR @TARANTOOL_VERSION_MINOR@
+
 /*  Defined if building for Linux */
 #cmakedefine TARGET_OS_LINUX 1
 /*  Defined if building for FreeBSD */

@@ -54,8 +54,9 @@
 #include TARANTOOL_CONFIG
 #include <util.h>
 #include <third_party/gopt/gopt.h>
+#include <third_party/queue.h>
+#include <plugin.h>
 #include <cfg/warning.h>
-
 
 static pid_t master_pid;
 #define DEFAULT_CFG_FILENAME "tarantool.cfg"
@@ -552,6 +553,10 @@ main(int argc, char **argv)
 
 	initialize(cfg.slab_alloc_arena, cfg.slab_alloc_minimal, cfg.slab_alloc_factor);
 	signal_init();
+
+	plugin_init();
+	plugin_attach_dir(cfg.plugin_dir);
+	plugin_print();
 
 	mod_init();
 	admin_init();

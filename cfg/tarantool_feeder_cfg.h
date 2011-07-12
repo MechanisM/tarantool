@@ -2,6 +2,7 @@
 #define tarantool_cfg_CFG_H
 
 #include <stdio.h>
+#include <stdbool.h>
 #include <sys/types.h>
 
 /*
@@ -64,6 +65,9 @@ typedef struct tarantool_cfg {
 
 	/* network io readahead */
 	int32_t	readahead;
+
+	/* plugin directory (where plugins attach from) */
+	char*	plugin_dir;
 
 	/*
 	 * feed WAL to remote replicas

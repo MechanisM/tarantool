@@ -42,3 +42,6 @@ backlog=1024, ro
 
 # network io readahead
 readahead=16320
+
+# plugin directory (where plugins attach from)
+plugin_dir="../lib/tarantool", ro

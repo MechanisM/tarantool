@@ -22,6 +22,7 @@ include(cmake/check_objective_c_compiler.cmake)
 #
 set (TARANTOOL_PRODUCT "box")
 set (TARANTOOL_MODULES "box" "feeder")
+set (TARANTOOL_PLUGINS "example")
 
 #
 # Set default build type to Debug. This is to ease a developer's
@@ -123,7 +124,8 @@ if (TARANTOOL_VERSION STREQUAL "")
     set (TARANTOOL_VERSION
         "${CPACK_PACKAGE_VERSION_MAJOR}.${CPACK_PACKAGE_VERSION_MINOR}.${CPACK_PACKAGE_VERSION_PATCH}")
 endif()
-
+set (TARANTOOL_VERSION_MAJOR ${CPACK_PACKAGE_VERSION_MAJOR})
+set (TARANTOOL_VERSION_MINOR ${CPACK_PACKAGE_VERSION_MINOR})
 
 #
 # Set flags for all include files: those maintained by us and
@@ -225,6 +227,7 @@ add_subdirectory(cfg)
 add_subdirectory(connector)
 add_subdirectory(core)
 add_subdirectory(mod)
+add_subdirectory(plugin)
 add_subdirectory(test)
 add_subdirectory(doc EXCLUDE_FROM_ALL)
 

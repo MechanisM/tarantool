@@ -56,7 +56,8 @@ set (recompiled_core_sources
 
 set (common_sources tbuf.m palloc.m util.m
     salloc.m pickle.m coro.m stat.m log_io.m
-    log_io_remote.m iproto.m exception.m errcode.c latch.m)
+    log_io_remote.m iproto.m exception.m errcode.c latch.m
+    plugin.c)
 
 if (ENABLE_TRACE)
   set (common_sources ${common_sources} trace.m)
@@ -68,6 +69,10 @@ set_target_properties(core PROPERTIES COMPILE_FLAGS "${core_cflags}")
 
 set (common_libraries cfg core ev coro gopt misc objc)
 
+if (TARGET_OS_LINUX)
+	set (common_libraries ${common_libraries} dl)
+endif()
+
 if (ENABLE_GCOV)
   set (common_libraries ${common_libraries} gcov)
 endif()
@@ -76,7 +81,7 @@ if (ENABLE_BACKTRACE AND HAVE_BFD)
   set (common_libraries ${common_libraries} bfd)
   if (ENABLE_STATIC)
      include (FindZLIB)
-     set (common_libraries ${common_libraries} ${ZLIB_LIBRARIES} iberty dl)
+     set (common_libraries ${common_libraries} ${ZLIB_LIBRARIES} iberty)
   endif()
 endif()
 

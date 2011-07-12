@@ -42,6 +42,7 @@ init_tarantool_cfg(tarantool_cfg *c) {
 	c->io_collect_interval = 0;
 	c->backlog = 0;
 	c->readahead = 0;
+	c->plugin_dir = NULL;
 	c->snap_dir = NULL;
 	c->wal_dir = NULL;
 	c->primary_port = 0;
@@ -86,6 +87,8 @@ fill_default_tarantool_cfg(tarantool_cfg *c) {
 	c->io_collect_interval = 0;
 	c->backlog = 1024;
 	c->readahead = 16320;
+	c->plugin_dir = strdup("../lib/tarantool");
+	if (c->plugin_dir == NULL) return CNF_NOMEMORY;
 	c->snap_dir = strdup(".");
 	if (c->snap_dir == NULL) return CNF_NOMEMORY;
 	c->wal_dir = strdup(".");
@@ -188,6 +191,9 @@ static NameAtom _name__backlog[] = {
 };
 static NameAtom _name__readahead[] = {
 	{ "readahead", -1, NULL }
+};
+static NameAtom _name__plugin_dir[] = {
+	{ "plugin_dir", -1, NULL }
 };
 static NameAtom _name__snap_dir[] = {
 	{ "snap_dir", -1, NULL }
@@ -506,6 +512,17 @@ acceptValue(tarantool_cfg* c, OptDef* opt, int check_rdonly) {
 		if ( (i32 == LONG_MIN || i32 == LONG_MAX) && errno == ERANGE)
 			return CNF_WRONGRANGE;
 		c->readahead = i32;
+	}
+	else if ( cmpNameAtoms( opt->name, _name__plugin_dir) ) {
+		if (opt->paramType != stringType )
+			return CNF_WRONGTYPE;
+		c->__confetti_flags &= ~CNF_FLAG_STRUCT_NOTSET;
+		errno = 0;
+		if (check_rdonly && ( (opt->paramValue.stringval == NULL && c->plugin_dir == NULL) || strcmp(opt->paramValue.stringval, c->plugin_dir) != 0))
+			return CNF_RDONLY;
+		c->plugin_dir = (opt->paramValue.stringval) ? strdup(opt->paramValue.stringval) : NULL;
+		if (opt->paramValue.stringval && c->plugin_dir == NULL)
+			return CNF_NOMEMORY;
 	}
 	else if ( cmpNameAtoms( opt->name, _name__snap_dir) ) {
 		if (opt->paramType != stringType )
@@ -1075,6 +1092,7 @@ typedef enum IteratorState {
 	S_name__io_collect_interval,
 	S_name__backlog,
 	S_name__readahead,
+	S_name__plugin_dir,
 	S_name__snap_dir,
 	S_name__wal_dir,
 	S_name__primary_port,
@@ -1282,6 +1300,16 @@ again:
 			}
 			sprintf(*v, "%"PRId32, c->readahead);
 			snprintf(buf, PRINTBUFLEN-1, "readahead");
+			i->state = S_name__plugin_dir;
+			return buf;
+		case S_name__plugin_dir:
+			*v = (c->plugin_dir) ? strdup(c->plugin_dir) : NULL;
+			if (*v == NULL && c->plugin_dir) {
+				free(i);
+				out_warning(CNF_NOMEMORY, "No memory to output value");
+				return NULL;
+			}
+			snprintf(buf, PRINTBUFLEN-1, "plugin_dir");
 			i->state = S_name__snap_dir;
 			return buf;
 		case S_name__snap_dir:
@@ -1824,6 +1852,9 @@ dup_tarantool_cfg(tarantool_cfg* dst, tarantool_cfg* src) {
 	dst->io_collect_interval = src->io_collect_interval;
 	dst->backlog = src->backlog;
 	dst->readahead = src->readahead;
+	dst->plugin_dir = src->plugin_dir == NULL ? NULL : strdup(src->plugin_dir);
+	if (src->plugin_dir != NULL && dst->plugin_dir == NULL)
+		return CNF_NOMEMORY;
 	dst->snap_dir = src->snap_dir == NULL ? NULL : strdup(src->snap_dir);
 	if (src->snap_dir != NULL && dst->snap_dir == NULL)
 		return CNF_NOMEMORY;
@@ -1922,6 +1953,8 @@ destroy_tarantool_cfg(tarantool_cfg* c) {
 		free(c->pid_file);
 	if (c->logger != NULL)
 		free(c->logger);
+	if (c->plugin_dir != NULL)
+		free(c->plugin_dir);
 	if (c->snap_dir != NULL)
 		free(c->snap_dir);
 	if (c->wal_dir != NULL)
@@ -2065,6 +2098,11 @@ cmp_tarantool_cfg(tarantool_cfg* c1, tarantool_cfg* c2, int only_check_rdonly) {
 			return diff;
 		}
 	}
+	if (confetti_strcmp(c1->plugin_dir, c2->plugin_dir) != 0) {
+		snprintf(diff, PRINTBUFLEN - 1, "%s", "c->plugin_dir");
+
+		return diff;
+}
 	if (confetti_strcmp(c1->snap_dir, c2->snap_dir) != 0) {
 		snprintf(diff, PRINTBUFLEN - 1, "%s", "c->snap_dir");
 
