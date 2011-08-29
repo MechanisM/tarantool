@@ -32,6 +32,8 @@
 
 struct tbuf;
 
+extern const size_t MAX_SLAB_ITEM;
+
 bool salloc_init(size_t size, size_t minimal, double factor);
 void salloc_destroy(void);
 void *salloc(size_t size);

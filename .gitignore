@@ -12,6 +12,7 @@ test/lib/*.pyc
 test/lib/*/*.pyc
 test/box/protocol
 test/box/connector
+test/box/update_fields
 Makefile
 CMakeFiles
 CMakeCache.txt

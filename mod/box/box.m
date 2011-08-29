@@ -48,6 +48,91 @@
 #include "memcached.h"
 #include "box_lua.h"
 
+/** update fields operation */
+struct update_fields_op {
+	/** fields number */
+	u32 field_no;
+	/** operation code */
+	u8 opcode;
+	/* skip this operation */
+	bool skip;
+	/** operands */
+	struct {
+		union {
+			/** set operands */
+			struct {
+				/** set length */
+				u32 length;
+				/** set value */
+				void *value;
+			} set;
+			/** arith operands */
+			struct {
+				union {
+					/** 8-bit value */
+					i8 i8_val;
+					/** 16-bit value */
+					i16 i16_val;
+					/** 32-bit value */
+					i32 i32_val;
+					/** 64 bit value */
+					i64 i64_val;
+				};
+				/** arith value size */
+				u32 size;
+			} arith;
+			/** splice operands */
+			struct {
+				/** splice position */
+				i32 offset;
+				/** cut length */
+				i32 length;
+				/** paste list length */
+				i32 list_length;
+				/** paste list */
+				void *list;
+			} splice;
+		};
+		/** raw operand data */
+		struct {
+			/** raw length */
+			u32 length;
+			/** raw value */
+			void *value;
+		} raw;
+	} operand;
+	/** field length after apply */
+	u32 after_field_len;
+};
+
+/** update field splice operation */
+struct update_fields_op_splice {
+	/** splice position */
+	i32 offset;
+	/** cut length */
+	i32 length;
+	/** paste list length */
+	i32 list_length;
+	/** paste list */
+	void *list;
+};
+
+/** update fields commands */
+struct update_fields_cmd {
+	/** search key cardinality */
+	u32 key_cardinality;
+	/** search key */
+	void *key;
+	/** number of operation in the command */
+	u32 op_cnt;
+	/** operations */
+	struct update_fields_op *op;
+	/** field length before apply */
+	u32 before_tuple_len;
+	/** field length after apply */
+	u32 after_tuple_len;
+};
+
 static void box_process_ro(u32 op, struct tbuf *request_data);
 static void box_process_rw(u32 op, struct tbuf *request_data);
 
@@ -211,218 +296,431 @@ rollback_replace(struct box_txn *txn)
 	}
 }
 
-static void
-do_field_arith(u8 op, struct tbuf *field, void *arg, u32 arg_size)
+static i32
+field_to_i32(void *field)
 {
-	if (field->len != 4)
+	u32 field_length = load_varint32(&field);
+	if (field_length == 0)
+		return 0;
+	if (field_length != sizeof(i32))
+		tnt_raise(IllegalParams, :"field splice: wrong operand type");
+
+	return * (i32 *)field;
+}
+
+static struct update_fields_cmd *
+parse_update_fields_command(struct tbuf *data)
+{
+	struct update_fields_cmd *cmd = palloc(fiber->gc_pool, sizeof(struct update_fields_cmd));
+
+	/* keys cardinality */
+	cmd->key_cardinality = read_u32(data);
+	if (cmd->key_cardinality > 1)
+		tnt_raise(IllegalParams, :"key must be single valued");
+	if (cmd->key_cardinality == 0)
+		tnt_raise(IllegalParams, :"key not defined");
+
+	/* key */
+	cmd->key = read_field(data);
+
+	/* number of operations */
+	cmd->op_cnt = read_u32(data);
+	if (cmd->op_cnt > BOX_UPATE_FIELDS_OP_CNT_MAX)
+		tnt_raise(IllegalParams, :"too many operations for update");
+	if (cmd->op_cnt == 0)
+		tnt_raise(IllegalParams, :"no operations for update");
+
+	/* read update operations */
+	cmd->op = palloc(fiber->gc_pool, cmd->op_cnt * sizeof(struct update_fields_op));
+	for (int i = 0; i < cmd->op_cnt; ++i) {
+		struct update_fields_op *op = &cmd->op[i];
+
+		/* read operation */
+		op->field_no = read_u32(data);
+		op->opcode = read_u8(data);
+		op->operand.raw.value = read_field(data);
+		op->operand.raw.length = load_varint32(&op->operand.raw.value);
+	}
+	/* check last data length, it must be fully read */
+	if (data->len != 0)
+		tnt_raise(IllegalParams, :"can't unpack request");
+
+	return cmd;
+}
+
+static int
+update_fields_op_cmp(const void *op1_ptr, const void *op2_ptr)
+{
+	const struct update_fields_op *op1 = op1_ptr;
+	const struct update_fields_op *op2 = op2_ptr;
+
+	if (op1->field_no < op2->field_no)
+		return -1;
+	if (op1->field_no > op2->field_no)
+		return 1;
+
+	if (op1->operand.raw.value < op2->operand.raw.value)
+		return -1;
+	if (op1->operand.raw.value > op2->operand.raw.value)
+		return 1;
+	return 0;
+}
+
+static void
+parse_update_fields_operations_set(struct update_fields_op *op, u32 field_len __attribute__((unused)))
+{
+	/* parse set operands */
+	op->operand.set.length = op->operand.raw.length;
+	op->operand.set.value = op->operand.raw.value;
+	/* save fields length */
+	op->after_field_len = op->operand.set.length;
+}
+
+static void
+parse_update_fields_operations_arith(struct update_fields_op *op, u32 field_len)
+{
+	/* check arguments */
+	if (field_len != sizeof(i32))
 		tnt_raise(IllegalParams, :"numeric operation on a field with length != 4");
 
-	if (arg_size != 4)
+	if (op->operand.raw.length != sizeof(i32))
 		tnt_raise(IllegalParams, :"the argument of a numeric operation is not a 4-byte int");
 
-	switch (op) {
-	case 1:
-		*(i32 *)field->data += *(i32 *)arg;
+	/* parse arith operands */
+	op->operand.arith.size = op->operand.raw.length;
+	op->operand.arith.i32_val = *(i32*)op->operand.raw.value;
+	/* save fields length */
+	op->after_field_len = op->operand.arith.size;
+}
+
+static void
+parse_update_fields_operations_splice(struct update_fields_op *op, u32 field_len)
+{
+	struct tbuf operands = {
+		.len = op->operand.raw.length,
+		.size = op->operand.raw.length,
+		.data = op->operand.raw.value,
+		.pool = NULL
+	};
+
+	/* read offset */
+	void *offset_field = read_field(&operands);
+	op->operand.splice.offset = field_to_i32(offset_field);
+	if (op->operand.splice.offset < 0) {
+		if (-op->operand.splice.offset > field_len)
+			tnt_raise(IllegalParams, :"field splice: offset is out of bound");
+		op->operand.splice.offset = op->operand.splice.offset + field_len;
+	} else if (op->operand.splice.offset > field_len) {
+		op->operand.splice.offset = field_len;
+	}
+
+	/* read length */
+	void *length_field = read_field(&operands);
+	op->operand.splice.length = field_to_i32(length_field);
+	if (op->operand.splice.length < 0) {
+		if (-op->operand.splice.length > (field_len - op->operand.splice.offset))
+			op->operand.splice.length = 0;
+		else
+			op->operand.splice.length = op->operand.splice.length + field_len - op->operand.splice.offset;
+	} else if (op->operand.splice.length > (field_len - op->operand.splice.offset)) {
+		op->operand.splice.length = field_len - op->operand.splice.offset;
+	}
+
+	/* read list */
+	void *list_field = read_field(&operands);
+	op->operand.splice.list_length = load_varint32(&list_field);
+	op->operand.splice.list = list_field;
+
+	/* check last operands data length, it must be fully read */
+	if (operands.len != 0)
+		tnt_raise(IllegalParams, :"field splice: bad arguments");
+
+	/* save fields length */
+	op->after_field_len = op->operand.splice.offset;
+	op->after_field_len += op->operand.splice.list_length;
+	op->after_field_len += field_len - (op->operand.splice.offset + op->operand.splice.length);
+}
+
+static void
+parse_update_fields_operations(struct box_txn *txn, struct update_fields_cmd *cmd)
+{
+	/* sort operations by fields  */
+	qsort(cmd->op, cmd->op_cnt, sizeof(struct update_fields_op), update_fields_op_cmp);
+
+	void *old_fields = (uint8_t *)txn->old_tuple->data;
+	u32 op_curr = 0;
+	u32 tuple_len = 0;
+	for (int field_no = 0; field_no < txn->old_tuple->cardinality; ++field_no) {
+		/* get field length */
+		u32 old_field_len = load_varint32(&old_fields);
+
+		u32 field_len = old_field_len;
+
+		int op_begin = op_curr;
+		int op_usefull = op_curr;
+		while (op_curr < cmd->op_cnt) {
+			struct update_fields_op *op = &cmd->op[op_curr];
+
+			/* since the operations are ordered with respect to field number
+			  operation field number must be grater or equal current field number */
+			if (op->field_no > field_no) {
+				/* no more operation for this field */
+				break;
+			}
+
+			op->skip = false;
+			switch (op->opcode) {
+			case SET_FIELD:
+				parse_update_fields_operations_set(op, field_len);
+				op_usefull = op_curr;
+				break;
+			case ADD_INT:
+			case BIT_AND_INT:
+			case BIT_XOR_INT:
+			case BIT_OR_INT:
+				parse_update_fields_operations_arith(op, field_len);
+				break;
+			case SPLICE_STR:
+				parse_update_fields_operations_splice(op, field_len);
+				break;
+			default:
+				tnt_raise(IllegalParams, :"op is not in range [0..5]");
+			}
+			field_len = op->after_field_len;
+
+			op_curr += 1;
+		}
+
+		/* skip all useless operations */
+		for (int op_useless = op_usefull - 1; op_useless >= op_begin; --op_useless)
+			cmd->op[op_useless].skip = true;
+
+		tuple_len += varint32_sizeof(field_len) + field_len;
+		/* go to next field */
+		old_fields += old_field_len;
+	}
+
+	if (op_curr < cmd->op_cnt)
+		tnt_raise(ClientError, :ER_NO_SUCH_FIELD, cmd->op[op_curr].field_no);
+
+	if (tuple_len > MAX_SLAB_ITEM)
+		tnt_raise(ClientError, :ER_TUPLE_IS_TOO_LONG, tuple_len);
+
+	cmd->before_tuple_len = txn->old_tuple->bsize;
+	cmd->after_tuple_len = tuple_len;
+}
+
+void
+do_update_fields_op_set(struct update_fields_op *op,
+			   struct tbuf **field_ptr,
+			   bool *inplace)
+{
+	struct tbuf *field = *field_ptr;
+
+	u32 new_field_len = varint32_sizeof(op->operand.set.length) + op->operand.set.length;
+	if (new_field_len > field->size) {
+		/* operation can not be apply in place, create separate buffer */
+		field = tbuf_alloc(fiber->gc_pool);
+		tbuf_ensure(field, new_field_len);
+		*field_ptr = field;
+		*inplace = false;
+	}
+
+	/* copy new field */
+	void *field_value = save_varint32(field->data, op->operand.set.length);
+	memcpy(field_value, op->operand.set.value, op->operand.set.length);
+	field->len = new_field_len;
+}
+
+void
+do_update_fields_op_arith(struct update_fields_op *op,
+			     struct tbuf **field_ptr,
+			     bool *inplace __attribute__((unused)))
+{
+	struct tbuf *field = *field_ptr;
+	void *field_value = field->data + varint32_sizeof(field->len);
+	switch (op->opcode) {
+	case ADD_INT:
+		*(i32 *)field_value += op->operand.arith.i32_val;
 		break;
-	case 2:
-		*(u32 *)field->data &= *(u32 *)arg;
+	case BIT_AND_INT:
+		*(u32 *)field_value &= op->operand.arith.i32_val;
 		break;
-	case 3:
-		*(u32 *)field->data ^= *(u32 *)arg;
+	case BIT_XOR_INT:
+		*(u32 *)field_value ^= op->operand.arith.i32_val;
 		break;
-	case 4:
-		*(u32 *)field->data |= *(u32 *)arg;
+	case BIT_OR_INT:
+		*(u32 *)field_value |= op->operand.arith.i32_val;
 		break;
 	}
 }
 
-static void
-do_field_splice(struct tbuf *field, void *args_data, u32 args_data_size)
+void
+do_update_fields_op_splice(struct update_fields_op *op,
+			      struct tbuf **field_ptr,
+			      bool *inplace)
 {
-	struct tbuf args = {
-		.len = args_data_size,
-		.size = args_data_size,
-		.data = args_data,
-		.pool = NULL
-	};
-	struct tbuf *new_field = NULL;
-	void *offset_field, *length_field, *list_field;
-	u32 offset_size, length_size, list_size;
-	i32 offset, length;
-	u32 noffset, nlength;	/* normalized values */
+	struct tbuf *field = *field_ptr;
+	/* splice do always in the separate buffer */
+	*inplace = false;
 
-	new_field = tbuf_alloc(fiber->gc_pool);
+	/* allocate new field */
+	struct tbuf *new_field = tbuf_alloc(fiber->gc_pool);
 
-	offset_field = read_field(&args);
-	length_field = read_field(&args);
-	list_field = read_field(&args);
-	if (args.len != 0)
-		tnt_raise(IllegalParams, :"field splice: bad arguments");
+	/* save field length */
+	tbuf_ensure(new_field, varint32_sizeof(op->after_field_len));
+	save_varint32(new_field->data, op->after_field_len);
+	new_field->len += varint32_sizeof(op->after_field_len);
 
-	offset_size = load_varint32(&offset_field);
-	if (offset_size == 0)
-		noffset = 0;
-	else if (offset_size == sizeof(offset)) {
-		offset = pick_u32(offset_field, &offset_field);
-		if (offset < 0) {
-			if (field->len < -offset)
-				tnt_raise(IllegalParams,
-					  :"field splice: offset is negative");
-			noffset = offset + field->len;
-		} else
-			noffset = offset;
-	} else
-		tnt_raise(IllegalParams, :"field splice: wrong size of offset");
+	/* save field value */
+	u32 field_length = field->len - varint32_sizeof(field->len);
+	void *field_value = field->data + varint32_sizeof(field->len);
 
-	if (noffset > field->len)
-		noffset = field->len;
-
-	length_size = load_varint32(&length_field);
-	if (length_size == 0)
-		nlength = field->len - noffset;
-	else if (length_size == sizeof(length)) {
-		if (offset_size == 0)
-			tnt_raise(IllegalParams,
-				  :"field splice: offset is empty but length is not");
-
-		length = pick_u32(length_field, &length_field);
-		if (length < 0) {
-			if ((field->len - noffset) < -length)
-				nlength = 0;
-			else
-				nlength = length + field->len - noffset;
-		} else
-			nlength = length;
-	} else
-		tnt_raise(IllegalParams, :"field splice: wrong size of length");
-
-	if (nlength > (field->len - noffset))
-		nlength = field->len - noffset;
-
-	list_size = load_varint32(&list_field);
-	if (list_size > 0 && length_size == 0)
-		tnt_raise(IllegalParams,
-			  :"field splice: length field is empty but list is not");
-	if (list_size > (UINT32_MAX - (field->len - nlength)))
-		tnt_raise(IllegalParams, :"field splice: list_size is too long");
-
-	say_debug("do_field_splice: noffset = %i, nlength = %i, list_size = %u",
-		  noffset, nlength, list_size);
-
-	new_field->len = 0;
-	tbuf_append(new_field, field->data, noffset);
-	tbuf_append(new_field, list_field, list_size);
-	tbuf_append(new_field, field->data + noffset + nlength, field->len - (noffset + nlength));
+	tbuf_append(new_field, field_value, op->operand.splice.offset);
+	tbuf_append(new_field, op->operand.splice.list, op->operand.splice.list_length);
+	tbuf_append(new_field,
+		    field_value + op->operand.splice.offset + op->operand.splice.length,
+		    field_length - (op->operand.splice.offset + op->operand.splice.length));
 
 	*field = *new_field;
 }
 
-static void __attribute__((noinline))
-prepare_update(struct box_txn *txn, struct tbuf *data)
+static void
+do_update_fields(struct box_txn *txn, struct update_fields_cmd *cmd)
 {
-	struct tbuf **fields;
-	void *field;
-	int i;
-	void *key;
-	u32 op_cnt;
-	u32 tuples_affected = 1;
+	/* old tuple */
+	struct tbuf old_tuple = {
+		.len = txn->old_tuple->bsize,
+		.size = txn->old_tuple->bsize,
+		.data = txn->old_tuple->data,
+		.pool = NULL
+	};
+	/* new tuple */
+	struct tbuf tuple = {
+		.len = txn->tuple->bsize,
+		.size = txn->tuple->bsize,
+		.data = txn->tuple->data,
+		.pool = NULL
+	};
 
-	u32 key_len = read_u32(data);
-	if (key_len != 1)
-		tnt_raise(IllegalParams, :"key must be single valued");
+	txn->tuple->cardinality = 0;
+	u32 op_curr = 0;
+	for (int field_no = 0; field_no < txn->old_tuple->cardinality; ++field_no) {
+		/* read field */
+		void *old_field = read_field(&old_tuple);
+		u32 old_value_len = load_varint32(&old_field);
+		void *old_value = old_field;
 
-	key = read_field(data);
-	op_cnt = read_u32(data);
+		struct tbuf inplace_field;
+		struct tbuf *field;
+		bool inplace;
 
-	if (op_cnt > 128)
-		tnt_raise(IllegalParams, :"too many operations for update");
-	if (op_cnt == 0)
-		tnt_raise(IllegalParams, :"no operations for update");
-	if (key == NULL)
-		tnt_raise(IllegalParams, :"invalid key");
+		u32 old_field_len = varint32_sizeof(old_value_len) + old_value_len;
+		if (old_field_len <= tuple.len) {
+			/* field can be put to new tuple */
 
-	txn->old_tuple = txn->index->find(txn->index, key);
-	if (txn->old_tuple == NULL) {
-		txn->flags |= BOX_NOT_STORE;
+			/* move field to new tuple */
+			/* save field size */
+			void *field_value = save_varint32(tuple.data, old_value_len);
+			/* save field data */
+			memcpy(field_value, old_value, old_value_len);
 
-		tuples_affected = 0;
+			inplace_field.len = old_field_len;
+			inplace_field.size = tuple.len;
+			inplace_field.data = tuple.data;
 
-		goto out;
-	}
-
-	lock_tuple(txn, txn->old_tuple);
-
-	fields = palloc(fiber->gc_pool, (txn->old_tuple->cardinality + 1) * sizeof(struct tbuf *));
-	memset(fields, 0, (txn->old_tuple->cardinality + 1) * sizeof(struct tbuf *));
-
-	for (i = 0, field = (uint8_t *)txn->old_tuple->data; i < txn->old_tuple->cardinality; i++) {
-		fields[i] = tbuf_alloc(fiber->gc_pool);
-
-		u32 field_size = load_varint32(&field);
-		tbuf_append(fields[i], field, field_size);
-		field += field_size;
-	}
-
-	while (op_cnt-- > 0) {
-		u8 op;
-		u32 field_no, arg_size;
-		void *arg;
-
-		field_no = read_u32(data);
-
-		if (field_no >= txn->old_tuple->cardinality)
-			tnt_raise(ClientError, :ER_NO_SUCH_FIELD, field_no);
-
-		struct tbuf *sptr_field = fields[field_no];
-
-		op = read_u8(data);
-		if (op > 5)
-			tnt_raise(IllegalParams, :"op is not 0, 1, 2, 3, 4 or 5");
-
-		arg = read_field(data);
-		arg_size = load_varint32(&arg);
-
-		if (op == 0) {
-			tbuf_ensure(sptr_field, arg_size);
-			sptr_field->len = arg_size;
-			memcpy(sptr_field->data, arg, arg_size);
+			field = &inplace_field;
+			inplace = true;
 		} else {
-			switch (op) {
-			case 1:
-			case 2:
-			case 3:
-			case 4:
-				do_field_arith(op, sptr_field, arg, arg_size);
-				break;
-			case 5:
-				do_field_splice(sptr_field, arg, arg_size);
+			/* allocate separate buffer required */
+			field = tbuf_alloc(fiber->gc_pool);
+			tbuf_ensure(field, old_field_len);
+
+			/* move field to new buffer */
+			/* save field size */
+			void *field_value = save_varint32(field->data, old_value_len);
+			/* save field data */
+			memcpy(field_value, old_value, old_value_len);
+			field->len = old_field_len;
+			inplace = false;
+		}
+
+		/* apply operations to field */
+		while (op_curr < cmd->op_cnt) {
+			struct update_fields_op *op = &cmd->op[op_curr];
+
+			/* since the operations are ordered with respect to field number
+			  operation field number must be grater or equal current field number */
+			if (op->field_no > field_no) {
+				/* no more operation for this field */
 				break;
 			}
+
+			if (op->skip)
+				goto next_operaion;
+
+			switch (op->opcode) {
+			case SET_FIELD:
+				do_update_fields_op_set(op, &field, &inplace);
+				break;
+			case ADD_INT:
+			case BIT_AND_INT:
+			case BIT_XOR_INT:
+			case BIT_OR_INT:
+				do_update_fields_op_arith(op, &field, &inplace);
+				break;
+			case SPLICE_STR:
+				do_update_fields_op_splice(op, &field, &inplace);
+				break;
+			}
+
+		next_operaion:
+			op_curr += 1;
 		}
-	}
 
-	if (data->len != 0)
-		tnt_raise(IllegalParams, :"can't unpack request");
+		if (!inplace) {
+			assert(tuple.len >= field->len);
+			memcpy(tuple.data, field->data, field->len);
+		}
 
-	size_t bsize = 0;
-	for (int i = 0; i < txn->old_tuple->cardinality; i++)
-		bsize += fields[i]->len + varint32_sizeof(fields[i]->len);
-	txn->tuple = tuple_alloc(bsize);
-	tuple_txn_ref(txn, txn->tuple);
-	txn->tuple->cardinality = txn->old_tuple->cardinality;
-
-	uint8_t *p = txn->tuple->data;
-	for (int i = 0; i < txn->old_tuple->cardinality; i++) {
-		p = save_varint32(p, fields[i]->len);
-		memcpy(p, fields[i]->data, fields[i]->len);
-		p += fields[i]->len;
+		/* move new tuple pointer */
+		tuple.data += field->len;
+		tuple.len -= field->len;
+		txn->tuple->cardinality += 1;
 	}
 
 	validate_indexes(txn);
+}
 
-	if (data->len != 0)
-		tnt_raise(IllegalParams, :"can't unpack request");
+static void __attribute__((noinline))
+prepare_update_fields(struct box_txn *txn, struct tbuf *data)
+{
+	u32 tuples_affected = 1;
 
+	/* parse update command */
+	struct update_fields_cmd *cmd = parse_update_fields_command(data);
+
+	/* try to find updating tuple */
+	txn->old_tuple = txn->index->find(txn->index, cmd->key);
+	if (txn->old_tuple == NULL) {
+		/* tuple with same key not exist */
+		/* this command useless, it not be logged in the WAL */
+		txn->flags |= BOX_NOT_STORE;
+		tuples_affected = 0;
+		goto out;
+	}
+	/* lock tuple for changes from another commands */
+	lock_tuple(txn, txn->old_tuple);
+
+	/* prepare apply update fields */
+	parse_update_fields_operations(txn, cmd);
+
+	/* allocate new tuple */
+	txn->tuple = tuple_alloc(cmd->after_tuple_len);
+	tuple_txn_ref(txn, txn->tuple);
+
+	/* apply operations to new tuple */
+	do_update_fields(txn, cmd);
 out:
 	txn->out->dup_u32(tuples_affected);
 
@@ -759,7 +1057,7 @@ box_dispatch(struct box_txn *txn, struct tbuf *data)
 	case UPDATE:
 		txn_assign_n(txn, data);
 		txn->flags |= read_u32(data) & BOX_ALLOWED_REQUEST_FLAGS;
-		prepare_update(txn, data);
+		prepare_update_fields(txn, data);
 		break;
 	case CALL:
 		txn->flags |= read_u32(data) & BOX_ALLOWED_REQUEST_FLAGS;

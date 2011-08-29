@@ -111,7 +111,8 @@ enum { TNT_ERRMSG_MAX = 512 };
 	/* 54 */_(ER_NO_SUCH_FIELD,		2, "Field %u was not found in the tuple") \
 	/* 55 */_(ER_TUPLE_FOUND,		2, "Tuple already exists") \
 	/* 56 */_(ER_INDEX_VIOLATION,		2, "Duplicate key exists in a unique index") \
-	/* 57 */_(ER_NO_SUCH_NAMESPACE,		2, "Namespace %u does not exists")
+	/* 57 */_(ER_NO_SUCH_NAMESPACE,		2, "Namespace %u does not exists") \
+	/* 58 */_(ER_TUPLE_IS_TOO_LONG,		2, "Tuple is too long %u")
 
 
 /*

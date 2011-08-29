@@ -1,0 +1,14 @@
+# encoding: tarantool
+import subprocess
+import sys
+
+p = subprocess.Popen([ "box/update_fields" ], stdout=subprocess.PIPE)
+p.wait()
+for line in p.stdout.readlines():
+      sys.stdout.write(line)
+
+# resore default suite
+server.stop()
+server.deploy(self.suite_ini["config"])
+server.start()
+# vim: syntax=python
