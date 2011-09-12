@@ -1,8 +1,8 @@
 #ifndef TARANTOOL_SALLOC_H_INCLUDED
 #define TARANTOOL_SALLOC_H_INCLUDED
 /*
- * Copyright (C) 2010 Mail.RU
- * Copyright (C) 2010 Yuriy Vostrikov
+ * Copyright (C) 2010, 2011 Mail.RU
+ * Copyright (C) 2010, 2011 Yuriy Vostrikov
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -32,10 +32,11 @@
 
 struct tbuf;
 
-bool salloc_init(size_t size, size_t minimal, double factor);
+bool salloc_init(size_t size, size_t minimal_size, size_t meta_size, double factor);
 void salloc_destroy(void);
 void *salloc(size_t size);
 void sfree(void *ptr);
+void *smeta(void *ptr);
 void slab_validate();
 void slab_stat(struct tbuf *buf);
 void slab_stat2(u64 *bytes_used, u64 *items);

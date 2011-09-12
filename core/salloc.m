@@ -1,6 +1,6 @@
 /*
- * Copyright (C) 2010 Mail.RU
- * Copyright (C) 2010 Yuriy Vostrikov
+ * Copyright (C) 2010, 2011 Mail.RU
+ * Copyright (C) 2010, 2011 Yuriy Vostrikov
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -62,7 +62,7 @@ struct slab {
 	size_t items;
 	struct slab_item *free;
 	struct slab_class *class;
-	void *brk;
+	void *brk, *meta_brk;
 	 SLIST_ENTRY(slab) link;
 	 SLIST_ENTRY(slab) free_link;
 	 TAILQ_ENTRY(slab) class_free_link;
@@ -73,7 +73,7 @@ SLIST_HEAD(slab_slist_head, slab);
 TAILQ_HEAD(slab_tailq_head, slab);
 
 struct slab_class {
-	size_t item_size;
+	size_t item_size, meta_size;
 	struct slab_tailq_head slabs, free_slabs;
 };
 
@@ -101,13 +101,14 @@ slab_header(void *ptr)
 }
 
 static void
-slab_classes_init(size_t minimal, double factor)
+slab_classes_init(size_t minimal_size, size_t meta_size, double factor)
 {
 	int i, size;
 	const size_t ptr_size = sizeof(void *);
 
-	for (i = 0, size = minimal; i < nelem(slab_classes) && size <= MAX_SLAB_ITEM; i++) {
+	for (i = 0, size = minimal_size; i < nelem(slab_classes) && size <= MAX_SLAB_ITEM; i++) {
 		slab_classes[i].item_size = size - sizeof(red_zone);
+		slab_classes[i].meta_size = meta_size;
 		TAILQ_INIT(&slab_classes[i].free_slabs);
 
 		size = MAX((size_t)(size * factor) & ~(ptr_size - 1),
@@ -132,7 +133,6 @@ arena_init(struct arena *arena, size_t size)
 		say_syserror("mmap");
 		return false;
 	}
-
 	arena->base = (char *)SLAB_ALIGN_PTR(arena->mmap_base) + SLAB_SIZE;
 	return true;
 }
@@ -153,7 +153,7 @@ arena_alloc(struct arena *arena)
 }
 
 bool
-salloc_init(size_t size, size_t minimal, double factor)
+salloc_init(size_t size, size_t minimal_size, size_t meta_size, double factor)
 {
 	if (size < SLAB_SIZE * 2)
 		return false;
@@ -161,7 +161,7 @@ salloc_init(size_t size, size_t minimal, double factor)
 	if (!arena_init(&arena, size))
 		return false;
 
-	slab_classes_init(MAX(sizeof(void *), minimal), factor);
+	slab_classes_init(MAX(sizeof(void *), minimal_size), meta_size, factor);
 	return true;
 }
 
@@ -174,6 +174,12 @@ salloc_destroy(void)
 	memset(&arena, 0, sizeof(struct arena));
 }
 
+static void *
+initial_brk(struct slab *slab)
+{
+	return (void *)CACHEALIGN((void *)slab + sizeof(struct slab));
+}
+
 static void
 format_slab(struct slab_class *class, struct slab *slab)
 {
@@ -183,17 +189,18 @@ format_slab(struct slab_class *class, struct slab *slab)
 	slab->free = NULL;
 	slab->class = class;
 	slab->items = 0;
-	slab->used = 0;
-	slab->brk = (void *)CACHEALIGN((void *)slab + sizeof(struct slab));
+	slab->brk = initial_brk(slab);
+	slab->meta_brk = (void *)slab + SLAB_SIZE;
 
 	TAILQ_INSERT_HEAD(&class->slabs, slab, class_link);
 	TAILQ_INSERT_HEAD(&class->free_slabs, slab, class_free_link);
 }
 
 static bool
-fully_formatted(struct slab *slab)
+full_formated(struct slab *slab)
 {
-	return slab->brk + slab->class->item_size >= (void *)slab + SLAB_SIZE;
+	return slab->brk + slab->class->item_size + sizeof(red_zone) >=
+		slab->meta_brk - slab->class->meta_size - sizeof(red_zone);
 }
 
 void
@@ -204,7 +211,8 @@ slab_validate(void)
 	SLIST_FOREACH(slab, &slabs, link) {
 		for (char *p = (char *)slab + sizeof(struct slab);
 		     p + slab->class->item_size < (char *)slab + SLAB_SIZE;
-		     p += slab->class->item_size + sizeof(red_zone)) {
+		     p += slab->class->item_size + sizeof(red_zone))
+		{
 			assert(memcmp(p + slab->class->item_size, red_zone, sizeof(red_zone)) == 0);
 		}
 	}
@@ -252,10 +260,19 @@ slab_of(struct slab_class *class)
 static bool
 valid_item(struct slab *slab, void *item)
 {
-	return (void *)item >= (void *)(slab) + sizeof(struct slab) &&
-	    (void *)item < (void *)(slab) + sizeof(struct slab) + SLAB_SIZE;
+	return initial_brk(slab) <= item && item < slab->meta_brk;
 }
 #endif
+
+void *
+smeta(void *ptr)
+{
+	struct slab *slab = slab_header(ptr);
+	void *slab_end = (void *)slab + SLAB_SIZE;
+	void *brk = initial_brk(slab);
+	int n = (ptr - brk) / (slab->class->item_size + sizeof(red_zone));
+	return slab_end - (slab->class->meta_size + sizeof(red_zone)) * (n + 1);
+}
 
 void *
 salloc(size_t size)
@@ -275,22 +292,24 @@ salloc(size_t size)
 		item = slab->brk;
 		memcpy((void *)item + class->item_size, red_zone, sizeof(red_zone));
 		slab->brk += class->item_size + sizeof(red_zone);
+		slab->meta_brk -= class->meta_size + sizeof(red_zone);
+		assert(slab->meta_brk == smeta(item));
 	} else {
 		assert(valid_item(slab, slab->free));
 		item = slab->free;
 
-		VALGRIND_MAKE_MEM_DEFINED(item, sizeof(void *));
+		(void)VALGRIND_MAKE_MEM_DEFINED(item, sizeof(void *));
 		slab->free = item->next;
-		VALGRIND_MAKE_MEM_UNDEFINED(item, sizeof(void *));
+		(void)VALGRIND_MAKE_MEM_UNDEFINED(item, sizeof(void *));
 	}
 
-	if (fully_formatted(slab) && slab->free == NULL)
+	if (full_formated(slab) && slab->free == NULL)
 		TAILQ_REMOVE(&class->free_slabs, slab, class_free_link);
 
-	slab->used += class->item_size + sizeof(red_zone);
 	slab->items += 1;
 
 	VALGRIND_MALLOCLIKE_BLOCK(item, class->item_size, sizeof(red_zone), 0);
+	VALGRIND_MALLOCLIKE_BLOCK(smeta(item), class->meta_size, sizeof(red_zone), 0);
 	return (void *)item;
 }
 
@@ -302,7 +321,7 @@ sfree(void *ptr)
 	struct slab_class *class = slab->class;
 	struct slab_item *item = ptr;
 
-	if (fully_formatted(slab) && slab->free == NULL)
+	if (full_formated(slab) && slab->free == NULL)
 		TAILQ_INSERT_TAIL(&class->free_slabs, slab, class_free_link);
 
 	assert(valid_item(slab, item));
@@ -310,7 +329,6 @@ sfree(void *ptr)
 
 	item->next = slab->free;
 	slab->free = item;
-	slab->used -= class->item_size + sizeof(red_zone);
 	slab->items -= 1;
 
 	if (slab->items == 0) {
@@ -320,6 +338,7 @@ sfree(void *ptr)
 	}
 
 	VALGRIND_FREELIKE_BLOCK(item, sizeof(red_zone));
+	VALGRIND_FREELIKE_BLOCK(smeta(item), sizeof(red_zone));
 }
 
 void
@@ -327,15 +346,18 @@ slab_stat(struct tbuf *t)
 {
 	struct slab *slab;
 	int slabs;
-	i64 items, used, free, total_used = 0;
+	size_t class_items, slab_used, class_used, class_free, total_used = 0;
 	tbuf_printf(t, "slab statistics:\n  classes:" CRLF);
 	for (int i = 0; i < slab_active_classes; i++) {
-		slabs = items = used = free = 0;
+		slabs = class_items = class_used = class_free = 0;
 		TAILQ_FOREACH(slab, &slab_classes[i].slabs, class_link) {
-			free += SLAB_SIZE - slab->used - sizeof(struct slab);
-			items += slab->items;
-			used += sizeof(struct slab) + slab->used;
-			total_used += sizeof(struct slab) + slab->used;
+			slab_used = initial_brk(slab) - (void *)slab;
+			slab_used += slab->items * (slab->class->item_size +
+						    slab->class->meta_size);
+			class_free += SLAB_SIZE - slab_used;
+			class_used += slab_used;
+			total_used += slab_used;
+			class_items += slab->items;
 			slabs++;
 		}
 
@@ -343,9 +365,9 @@ slab_stat(struct tbuf *t)
 			continue;
 
 		tbuf_printf(t,
-			    "     - { item_size: %- 5i, slabs: %- 3i, items: %- 11" PRIi64
-			    ", bytes_used: %- 12" PRIi64 ", bytes_free: %- 12" PRIi64 " }" CRLF,
-			    (int)slab_classes[i].item_size, slabs, items, used, free);
+			    "     - { item_size: %- 5zi, slabs: %- 3i, items: %- 11zi"
+			    ", bytes_used: %- 12zi, bytes_free: %- 12zi }" CRLF,
+			    slab_classes[i].item_size, slabs, class_items, class_used, class_free);
 
 	}
 	tbuf_printf(t, "  items_used: %.2f" CRLF, (double)total_used / arena.size * 100);
