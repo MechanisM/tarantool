@@ -38,7 +38,8 @@ enum tnt_update_type {
 	TNT_UPDATE_AND,
 	TNT_UPDATE_XOR,
 	TNT_UPDATE_OR,
-	TNT_UPDATE_SPLICE
+	TNT_UPDATE_SPLICE,
+	TNT_UPDATE_DELETE_FIELD
 };
 /** @} */
 
@@ -76,6 +77,9 @@ tnt_update_arith(struct tnt_update *update, int field,
 enum tnt_error
 tnt_update_splice(struct tnt_update *update, int field,
 		  int offset, int length, char *list, int list_size);
+
+enum tnt_error
+tnt_update_delete_field(struct tnt_update *update, int field);
 /** @} */
 
 /**

@@ -94,9 +94,9 @@ enum { TNT_ERRMSG_MAX = 512 };
 	/* 38 */_(ER_WRONG_VERSION,		2, "Unsupported version of protocol") \
 		/* end of silversearch error codes */					\
 	/* 39 */_(ER_WAL_IO,			2, "Failed to write to disk") \
-	/* 40 */_(ER_UNUSED40,			0, "Unused40") \
-	/* 41 */_(ER_UNUSED41,			0, "Unused41") \
-	/* 42 */_(ER_UNUSED42,			0, "Unused42") \
+	/* 40 */_(ER_TYPE_MISMATCH,		2, "Type mismatch: %s") \
+	/* 41 */_(ER_INVALID_CMD_FORMAT,	2, "Invalid command format: %s") \
+	/* 42 */_(ER_TUPLE_IS_TOO_LONG,		2, "Tuple is too long %u") \
 	/* 43 */_(ER_UNUSED43,			0, "Unused43") \
 	/* 44 */_(ER_UNUSED44,			0, "Unused44") \
 	/* 45 */_(ER_UNUSED45,			0, "Unused45") \
@@ -112,7 +112,6 @@ enum { TNT_ERRMSG_MAX = 512 };
 	/* 55 */_(ER_TUPLE_FOUND,		2, "Tuple already exists") \
 	/* 56 */_(ER_INDEX_VIOLATION,		2, "Duplicate key exists in a unique index") \
 	/* 57 */_(ER_NO_SUCH_NAMESPACE,		2, "Namespace %u does not exists") \
-	/* 58 */_(ER_TUPLE_IS_TOO_LONG,		2, "Tuple is too long %u")
 
 
 /*

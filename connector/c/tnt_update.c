@@ -104,6 +104,9 @@ tnt_update_add(struct tnt_update *update,
 	case TNT_UPDATE_SPLICE:
 		tp = TNT_PROTO_UPDATE_SPLICE;
 		break;
+	case TNT_UPDATE_DELETE_FIELD:
+		tp = TNT_PROTO_UPDATE_DELETE_FIELD;
+		break;
 	default:
 		return TNT_EFAIL;
 	}
@@ -190,6 +193,12 @@ tnt_update_splice(struct tnt_update *update, int field,
 
 	update->size_enc += 4 + 1 + op->size_leb + op->size;
 	return TNT_EOK;
+}
+
+enum tnt_error
+tnt_update_delete_field(struct tnt_update *update, int field)
+{
+	return tnt_update_add(update, TNT_UPDATE_DELETE_FIELD, field, NULL, 0);
 }
 
 static enum tnt_error

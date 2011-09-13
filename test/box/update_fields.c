@@ -59,6 +59,15 @@ update_fields_set_i32(struct tnt_update *update, i32 field, i32 value);
 void
 update_fields_set_str(struct tnt_update *update, i32 field, char *str);
 
+/** add update fields operation: splice string */
+void
+update_fields_splice_str(struct tnt_update *update, i32 field, i32 offset, i32 length, char *list);
+
+/** add update fields operation: delete field */
+void
+update_fields_delete_field(struct tnt_update *update, i32 field);
+
+
 /** receive reply from server */
 void
 recv_command(char *command);
@@ -85,6 +94,10 @@ fail(char *msg);
 
 /** print tarantool error message and exit */
 void
+fail_tnt_error(char *msg, int error_code);
+
+/** print tarantool error message and exit */
+void
 fail_tnt_perror(char *msg);
 
 
@@ -100,6 +113,10 @@ test_simple_set();
 void
 test_long_set();
 
+/** update fields test case: append(set) operation test */
+void
+test_append();
+
 /** update fields test case: simple arithmetics operations test */
 void
 test_simple_arith();
@@ -112,9 +129,13 @@ test_multi_arith();
 void
 test_splice();
 
-/** update fields test case: set and spice operations */
+/** update fields test case: set and spice operations test */
 void
 test_set_and_splice();
+
+/** update fields test case: delete field operations test */
+void
+test_delete_field();
 
 
 /*==========================================================================
@@ -129,10 +150,12 @@ main(void)
 	/* run tests */
 	test_simple_set();
 	test_long_set();
+	test_append();
 	test_simple_arith();
 	test_multi_arith();
 	test_splice();
 	test_set_and_splice();
+	test_delete_field();
 	/* clean-up suite */
 	test_suite_tear_down();
 	return EXIT_SUCCESS;
@@ -177,19 +200,33 @@ update_fields(i32 key, struct tnt_update *update)
 void
 update_fields_set_i32(struct tnt_update *update, i32 field, i32 value)
 {
-	tnt_update_assign(update, field, (char *)&value, sizeof(value));
+	int result = tnt_update_assign(update, field, (char *)&value, sizeof(value));
+	if (result != 0)
+		fail_tnt_error("tnt_update_assign", result);
 }
 
 void
 update_fields_set_str(struct tnt_update *update, i32 field, char *str)
 {
-	tnt_update_assign(update, field, str, strlen(str));
+	int result = tnt_update_assign(update, field, str, strlen(str));
+	if (result != 0)
+		fail_tnt_error("tnt_update_delete_field", result);
 }
 
 void
 update_fields_splice_str(struct tnt_update *update, i32 field, i32 offset, i32 length, char *list)
 {
-	tnt_update_splice(update, field, offset, length, list, strlen(list));
+	int result = tnt_update_splice(update, field, offset, length, list, strlen(list));
+	if (result != 0)
+		fail_tnt_error("tnt_update_splice", result);
+}
+
+void
+update_fields_delete_field(struct tnt_update *update, i32 field)
+{
+	int result = tnt_update_delete_field(update, field);
+	if (result != 0)
+		fail_tnt_error("tnt_update_delete_field", result);
 }
 
 void
@@ -281,14 +318,21 @@ test_suite_tear_down()
 void
 fail(char *msg)
 {
-	printf("fail: %s", msg);
+	printf("fail: %s\n", msg);
+	exit(EXIT_FAILURE);
+}
+
+void
+fail_tnt_error(char *msg, int error_code)
+{
+	printf("fail: %s: %i\n", msg, error_code);
 	exit(EXIT_FAILURE);
 }
 
 void
 fail_tnt_perror(char *msg)
 {
-	printf("fail: %s: %s", msg, tnt_strerror(tnt));
+	printf("fail: %s: %s\n", msg, tnt_strerror(tnt));
 	exit(EXIT_FAILURE);
 }
 
@@ -339,7 +383,7 @@ test_long_set()
 	struct tnt_tuple tuple;
 	struct tnt_update update;
 
-	printf(">>> test big set\n");
+	printf(">>> test long set\n");
 
 	/* insert tuple */
 	printf("# insert tuple\n");
@@ -362,7 +406,70 @@ test_long_set()
 	update_fields(1, &update);
 	tnt_update_free(&update);
 
-	printf("<<< test big set done\n");
+	printf("<<< test long set done\n");
+}
+
+void
+test_append()
+{
+	struct tnt_tuple tuple;
+	struct tnt_update update;
+
+	printf(">>> test append\n");
+
+	/* insert tuple */
+	printf("# insert tuple\n");
+	tnt_tuple_init(&tuple);
+	tnt_tuplef(&tuple, "%d%s", 1, "first");
+	insert_tuple(&tuple);
+	tnt_tuple_free(&tuple);
+
+	/* test append field */
+	printf("# test append field\n");
+	tnt_update_init(&update);
+	update_fields_set_str(&update, 2, "second");
+	update_fields(1, &update);
+	tnt_update_free(&update);
+
+	/* test multi append field */
+	printf("# test multi append\n");
+	tnt_update_init(&update);
+	update_fields_set_str(&update, 3, "3");
+	update_fields_set_str(&update, 3, "new field value");
+	update_fields_set_str(&update, 3, "other new field value");
+	update_fields_set_str(&update, 3, "third");
+	update_fields(1, &update);
+	tnt_update_free(&update);
+
+	/* test append many field */
+	printf("# test append many fields\n");
+	tnt_update_init(&update);
+	update_fields_set_str(&update, 4, "fourth");
+	update_fields_set_str(&update, 5, "fifth");
+	update_fields_set_str(&update, 6, "sixth");
+	update_fields_set_str(&update, 7, "seventh");
+	update_fields_set_str(&update, 8, long_string);
+	update_fields(1, &update);
+	tnt_update_free(&update);
+
+	/* test append and change field */
+	printf("# test append and change field\n");
+	tnt_update_init(&update);
+	update_fields_set_str(&update, 9, long_string);
+	update_fields_splice_str(&update, 9, 1, 544, "ac");
+	tnt_update_arith(&update, 9, TNT_UPDATE_XOR, 0x3ffffff);
+	tnt_update_arith(&update, 9, TNT_UPDATE_ADD, 1024);
+	update_fields(1, &update);
+	tnt_update_free(&update);
+
+	/* test set to not an exist field */
+	printf("# test set to not an exist field\n");
+	tnt_update_init(&update);
+	update_fields_set_str(&update, 0xDEADBEEF, "invalid!");
+	update_fields(1, &update);
+	tnt_update_free(&update);
+
+	printf("<<< test append done\n");
 }
 
 void
@@ -560,5 +667,112 @@ test_set_and_splice()
 	tnt_update_free(&update);
 
 	printf("<<< test set and splice done\n");
+}
+
+/** update fields test case: delete field operations test */
+void
+test_delete_field()
+{
+	printf(">>> test delete field\n");
+
+	struct tnt_tuple tuple;
+	struct tnt_update update;
+	/* insert tuple */
+	printf("# insert tuple\n");
+	tnt_tuple_init(&tuple);
+	tnt_tuplef(&tuple, "%d%s%s%s%d%d%d%d%d%d%d%d%d%d", 1, "first", "hi, this is a test string!", "third", 1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
+	insert_tuple(&tuple);
+	tnt_tuple_free(&tuple);
+
+	/* test simple delete fields */
+	printf("# test simple delete fields\n");
+	tnt_update_init(&update);
+	update_fields_delete_field(&update, 2);
+	update_fields(1, &update);
+	tnt_update_free(&update);
+
+	/* test useless operations with delete fields*/
+	printf("# test useless operations with delete fields\n");
+	tnt_update_init(&update);
+	update_fields_set_i32(&update, 1, 0);
+	tnt_update_arith(&update, 1, TNT_UPDATE_ADD, 1);
+	tnt_update_arith(&update, 1, TNT_UPDATE_ADD, 1);
+	tnt_update_arith(&update, 1, TNT_UPDATE_ADD, 1);
+	tnt_update_arith(&update, 1, TNT_UPDATE_ADD, 1);
+	tnt_update_arith(&update, 1, TNT_UPDATE_ADD, 1);
+	tnt_update_arith(&update, 1, TNT_UPDATE_ADD, 1);
+	tnt_update_arith(&update, 1, TNT_UPDATE_ADD, 1);
+	tnt_update_arith(&update, 1, TNT_UPDATE_ADD, 1);
+	update_fields_delete_field(&update, 1);
+	update_fields(1, &update);
+	tnt_update_free(&update);
+
+	/* test multi delete fields */
+	printf("# test multi delete fields\n");
+	tnt_update_init(&update);
+	update_fields_delete_field(&update, 2);
+	update_fields_delete_field(&update, 3);
+	update_fields_delete_field(&update, 4);
+	update_fields_delete_field(&update, 5);
+	update_fields_delete_field(&update, 6);
+	update_fields_delete_field(&update, 7);
+	update_fields_delete_field(&update, 8);
+	update_fields_delete_field(&update, 9);
+	update_fields_delete_field(&update, 10);
+	update_fields(1, &update);
+	tnt_update_free(&update);
+
+	/* test delete and set */
+	printf("# test multi delete fields\n");
+	tnt_update_init(&update);
+	update_fields_delete_field(&update, 1);
+	update_fields_set_i32(&update, 1, 3);
+	tnt_update_arith(&update, 1, TNT_UPDATE_ADD, 1);
+	tnt_update_arith(&update, 1, TNT_UPDATE_ADD, 1);
+	tnt_update_arith(&update, 1, TNT_UPDATE_ADD, 1);
+	tnt_update_arith(&update, 1, TNT_UPDATE_ADD, 1);
+	tnt_update_arith(&update, 1, TNT_UPDATE_ADD, 1);
+	tnt_update_arith(&update, 1, TNT_UPDATE_ADD, 1);
+	update_fields(1, &update);
+	tnt_update_free(&update);
+
+	/* test append and delete */
+	printf("# test append and delete\n");
+	tnt_update_init(&update);
+	update_fields_set_str(&update, 3, "second");
+	update_fields_delete_field(&update, 3);
+	update_fields_set_str(&update, 3, "third");
+	update_fields_set_str(&update, 4, "third");
+	update_fields_delete_field(&update, 4);
+	update_fields_set_str(&update, 4, "third");
+	update_fields_set_str(&update, 4, "fourth");
+	update_fields_set_str(&update, 5, "fifth");
+	update_fields_set_str(&update, 6, "sixth");
+	update_fields_set_str(&update, 7, "seventh");
+	update_fields_set_str(&update, 8, "eighth");
+	update_fields_set_str(&update, 9, "ninth");
+	update_fields_delete_field(&update, 7);
+	update_fields_delete_field(&update, 6);
+	update_fields(1, &update);
+	tnt_update_free(&update);
+
+	/* test double delete */
+	printf("# test double delete\n");
+	tnt_update_init(&update);
+	update_fields_delete_field(&update, 3);
+	update_fields_delete_field(&update, 3);
+	update_fields(1, &update);
+	tnt_update_free(&update);
+	select_tuple(1);
+
+	/* test delete not an exist field */
+	printf("# test delete not an exist field\n");
+	tnt_update_init(&update);
+	update_fields_delete_field(&update, 0xDEADBEEF);
+	update_fields(1, &update);
+	tnt_update_free(&update);
+	select_tuple(1);
+
+	printf("<<< test delete field done\n");
 }
 

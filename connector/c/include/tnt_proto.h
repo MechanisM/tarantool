@@ -62,12 +62,13 @@ struct tnt_proto_insert {
 	/* tuple data */
 };
 
-#define TNT_PROTO_UPDATE_ASSIGN 0
-#define TNT_PROTO_UPDATE_ADD    1
-#define TNT_PROTO_UPDATE_AND    2
-#define TNT_PROTO_UPDATE_XOR    3
-#define TNT_PROTO_UPDATE_OR     4
-#define TNT_PROTO_UPDATE_SPLICE 5
+#define TNT_PROTO_UPDATE_ASSIGN		0
+#define TNT_PROTO_UPDATE_ADD		1
+#define TNT_PROTO_UPDATE_AND		2
+#define TNT_PROTO_UPDATE_XOR		3
+#define TNT_PROTO_UPDATE_OR		4
+#define TNT_PROTO_UPDATE_SPLICE		5
+#define TNT_PROTO_UPDATE_DELETE_FIELD 	6
 
 struct tnt_proto_update {
 	uint32_t ns;
