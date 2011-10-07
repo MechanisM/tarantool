@@ -598,7 +598,7 @@ replication_relay_loop(int client_sock)
 
 	/* init reovery porcess */
 	log_io = recover_init(NULL, cfg.wal_dir,
-			      replication_relay_send_row, INT32_MAX, 0, 64, RECOVER_READONLY, false);
+			      replication_relay_send_row, INT32_MAX, 0, 0, RECOVER_READONLY, false);
 
 	recover(log_io, lsn);
 	recover_follow(log_io, 0.1);

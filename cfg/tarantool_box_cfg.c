@@ -58,7 +58,7 @@ init_tarantool_cfg(tarantool_cfg *c) {
 	c->snap_io_rate_limit = 0;
 	c->rows_per_wal = 0;
 	c->wal_fsync_delay = 0;
-	c->wal_writer_inbox_size = 0;
+	c->wal_writer_queue_size = 0;
 	c->local_hot_standby = false;
 	c->wal_dir_rescan_delay = 0;
 	c->panic_on_snap_error = false;
@@ -105,7 +105,7 @@ fill_default_tarantool_cfg(tarantool_cfg *c) {
 	c->snap_io_rate_limit = 0;
 	c->rows_per_wal = 500000;
 	c->wal_fsync_delay = 0;
-	c->wal_writer_inbox_size = 128;
+	c->wal_writer_queue_size = 128;
 	c->local_hot_standby = false;
 	c->wal_dir_rescan_delay = 0.1;
 	c->panic_on_snap_error = true;
@@ -238,8 +238,8 @@ static NameAtom _name__rows_per_wal[] = {
 static NameAtom _name__wal_fsync_delay[] = {
 	{ "wal_fsync_delay", -1, NULL }
 };
-static NameAtom _name__wal_writer_inbox_size[] = {
-	{ "wal_writer_inbox_size", -1, NULL }
+static NameAtom _name__wal_writer_queue_size[] = {
+	{ "wal_writer_queue_size", -1, NULL }
 };
 static NameAtom _name__local_hot_standby[] = {
 	{ "local_hot_standby", -1, NULL }
@@ -751,7 +751,7 @@ acceptValue(tarantool_cfg* c, OptDef* opt, int check_rdonly) {
 			return CNF_RDONLY;
 		c->wal_fsync_delay = i32;
 	}
-	else if ( cmpNameAtoms( opt->name, _name__wal_writer_inbox_size) ) {
+	else if ( cmpNameAtoms( opt->name, _name__wal_writer_queue_size) ) {
 		if (opt->paramType != numberType )
 			return CNF_WRONGTYPE;
 		c->__confetti_flags &= ~CNF_FLAG_STRUCT_NOTSET;
@@ -761,9 +761,9 @@ acceptValue(tarantool_cfg* c, OptDef* opt, int check_rdonly) {
 			return CNF_WRONGINT;
 		if ( (i32 == LONG_MIN || i32 == LONG_MAX) && errno == ERANGE)
 			return CNF_WRONGRANGE;
-		if (check_rdonly && c->wal_writer_inbox_size != i32)
+		if (check_rdonly && c->wal_writer_queue_size != i32)
 			return CNF_RDONLY;
-		c->wal_writer_inbox_size = i32;
+		c->wal_writer_queue_size = i32;
 	}
 	else if ( cmpNameAtoms( opt->name, _name__local_hot_standby) ) {
 		if (opt->paramType != stringType )
@@ -1170,7 +1170,7 @@ typedef enum IteratorState {
 	S_name__snap_io_rate_limit,
 	S_name__rows_per_wal,
 	S_name__wal_fsync_delay,
-	S_name__wal_writer_inbox_size,
+	S_name__wal_writer_queue_size,
 	S_name__local_hot_standby,
 	S_name__wal_dir_rescan_delay,
 	S_name__panic_on_snap_error,
@@ -1533,17 +1533,17 @@ again:
 			}
 			sprintf(*v, "%"PRId32, c->wal_fsync_delay);
 			snprintf(buf, PRINTBUFLEN-1, "wal_fsync_delay");
-			i->state = S_name__wal_writer_inbox_size;
+			i->state = S_name__wal_writer_queue_size;
 			return buf;
-		case S_name__wal_writer_inbox_size:
+		case S_name__wal_writer_queue_size:
 			*v = malloc(32);
 			if (*v == NULL) {
 				free(i);
 				out_warning(CNF_NOMEMORY, "No memory to output value");
 				return NULL;
 			}
-			sprintf(*v, "%"PRId32, c->wal_writer_inbox_size);
-			snprintf(buf, PRINTBUFLEN-1, "wal_writer_inbox_size");
+			sprintf(*v, "%"PRId32, c->wal_writer_queue_size);
+			snprintf(buf, PRINTBUFLEN-1, "wal_writer_queue_size");
 			i->state = S_name__local_hot_standby;
 			return buf;
 		case S_name__local_hot_standby:
@@ -1926,7 +1926,7 @@ dup_tarantool_cfg(tarantool_cfg* dst, tarantool_cfg* src) {
 	dst->snap_io_rate_limit = src->snap_io_rate_limit;
 	dst->rows_per_wal = src->rows_per_wal;
 	dst->wal_fsync_delay = src->wal_fsync_delay;
-	dst->wal_writer_inbox_size = src->wal_writer_inbox_size;
+	dst->wal_writer_queue_size = src->wal_writer_queue_size;
 	dst->local_hot_standby = src->local_hot_standby;
 	dst->wal_dir_rescan_delay = src->wal_dir_rescan_delay;
 	dst->panic_on_snap_error = src->panic_on_snap_error;
@@ -2233,8 +2233,8 @@ cmp_tarantool_cfg(tarantool_cfg* c1, tarantool_cfg* c2, int only_check_rdonly) {
 
 		return diff;
 	}
-	if (c1->wal_writer_inbox_size != c2->wal_writer_inbox_size) {
-		snprintf(diff, PRINTBUFLEN - 1, "%s", "c->wal_writer_inbox_size");
+	if (c1->wal_writer_queue_size != c2->wal_writer_queue_size) {
+		snprintf(diff, PRINTBUFLEN - 1, "%s", "c->wal_writer_queue_size");
 
 		return diff;
 	}

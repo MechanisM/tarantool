@@ -86,25 +86,10 @@ confirm_lsn(struct recovery_state *r, i64 lsn)
 	assert(r->confirmed_lsn <= r->lsn);
 
 	if (r->confirmed_lsn < lsn) {
-		if (r->confirmed_lsn + 1 != lsn)
-			say_warn("non consecutive lsn, last confirmed:%" PRIi64
-				 " new:%" PRIi64 " diff: %" PRIi64,
-				 r->confirmed_lsn, lsn, lsn - r->confirmed_lsn);
 		r->confirmed_lsn = lsn;
-		/* Alert the waiter, if any. There can be holes in
-		 * confirmed_lsn, in case of disk write failure,
-		 * but wal_writer never confirms LSNs out order.
-		 */
-		if (r->wait_lsn.waiter && r->confirmed_lsn >= r->wait_lsn.lsn) {
-			fiber_call(r->wait_lsn.waiter);
-		}
-
-		return 0;
-	} else {
-		say_warn("lsn double confirmed:%" PRIi64, r->confirmed_lsn);
 	}
 
-	return -1;
+	return 0;
 }
 
 
@@ -482,8 +467,8 @@ row_reader_v11(FILE *f, struct palloc_pool *pool)
 	return m;
 }
 
-static int
-inprogress_log_rename(char *filename)
+int
+log_io_inprogress_rename(char *filename)
 {
 	char *new_filename;
 	char *suffix = strrchr(filename, '.');
@@ -527,14 +512,14 @@ inprogress_log_unlink(char *filename)
 }
 
 int
-close_log(struct log_io **lptr)
+log_io_close(struct log_io **lptr)
 {
 	struct log_io *l = *lptr;
 	int r;
 
 	if (l->rows == 1 && l->mode == LOG_WRITE) {
 		/* Rename WAL before finalize. */
-		if (inprogress_log_rename(l->filename) != 0)
+		if (log_io_inprogress_rename(l->filename) != 0)
 			panic("can't rename 'inprogress' WAL");
 	}
 
@@ -553,8 +538,8 @@ close_log(struct log_io **lptr)
 	return r;
 }
 
-static int
-flush_log(struct log_io *l)
+int
+log_io_flush(struct log_io *l)
 {
 	if (fflush(l->f) < 0)
 		return -1;
@@ -612,9 +597,9 @@ format_filename(char *filename, struct log_io_class *class, i64 lsn, int suffix)
 	return filename;
 }
 
-static struct log_io *
-open_for_read(struct recovery_state *recover, struct log_io_class *class, i64 lsn, int suffix,
-	      const char *filename)
+struct log_io *
+log_io_open_for_read(struct recovery_state *recover, struct log_io_class *class, i64 lsn, int suffix,
+		     const char *filename)
 {
 	char filetype[32], version[32], buf[256];
 	struct log_io *l = NULL;
@@ -682,8 +667,8 @@ open_for_read(struct recovery_state *recover, struct log_io_class *class, i64 ls
 
 	return l;
       error:
-	say_error("open_for_read: failed to open `%s': %s", l->filename,
-		  errmsg);
+	/*say_error("open_for_read: failed to open `%s': %s", l->filename,
+		  errmsg);*/
 	if (l != NULL) {
 		if (l->f != NULL)
 			fclose(l->f);
@@ -693,7 +678,7 @@ open_for_read(struct recovery_state *recover, struct log_io_class *class, i64 ls
 }
 
 struct log_io *
-open_for_write(struct recovery_state *recover, struct log_io_class *class, i64 lsn,
+log_io_open_for_write(struct recovery_state *recover, struct log_io_class *class, i64 lsn,
 	       int suffix, int *save_errno)
 {
 	struct log_io *l = NULL;
@@ -787,7 +772,7 @@ read_log(const char *filename,
 		return -1;
 	}
 
-	l = open_for_read(NULL, c, 0, 0, filename);
+	l = log_io_open_for_read(NULL, c, 0, 0, filename);
 	iter_open(l, &i, read_rows);
 	while ((row = iter_inner(&i, (void *)1)))
 		h(state, row);
@@ -797,7 +782,7 @@ read_log(const char *filename,
 
 	close_iter(&i);
 	v11_class_free(c);
-	close_log(&l);
+	log_io_close(&l);
 	return i.error;
 }
 
@@ -818,7 +803,7 @@ recover_snap(struct recovery_state *r)
 			return -1;
 		}
 
-		snap = open_for_read(r, r->snap_class, lsn, 0, NULL);
+		snap = log_io_open_for_read(r, r->snap_class, lsn, 0, NULL);
 		if (snap == NULL) {
 			say_error("can't find/open snapshot");
 			return -1;
@@ -852,7 +837,7 @@ recover_snap(struct recovery_state *r)
 			close_iter(&i);
 
 		if (snap != NULL)
-			close_log(&snap);
+			log_io_close(&snap);
 
 		prelease(fiber->gc_pool);
 	}
@@ -953,19 +938,19 @@ recover_remaining_wals(struct recovery_state *r)
 			} else {
 				say_warn("wal `%s' wasn't correctly closed",
 					 r->current_wal->filename);
-				close_log(&r->current_wal);
+				log_io_close(&r->current_wal);
 			}
 		}
 
 		current_lsn = r->confirmed_lsn + 1;	/* TODO: find better way looking for next xlog */
-		next_wal = open_for_read(r, r->wal_class, current_lsn, 0, NULL);
+		next_wal = log_io_open_for_read(r, r->wal_class, current_lsn, 0, NULL);
 
 		/*
 		 * When doing final recovery, and dealing with the
 		 * last file, try opening .<suffix>.inprogress.
 		 */
 		if (next_wal == NULL && r->finalize && current_lsn == wal_greatest_lsn) {
-			next_wal = open_for_read(r, r->wal_class, current_lsn, -1, NULL);
+			next_wal = log_io_open_for_read(r, r->wal_class, current_lsn, -1, NULL);
 			if (next_wal == NULL) {
 				char *filename =
 					format_filename(NULL, r->wal_class, current_lsn, -1);
@@ -1006,7 +991,7 @@ recover_remaining_wals(struct recovery_state *r)
 		if (result == LOG_EOF) {
 			say_info("done `%s' confirmed_lsn:%" PRIi64, r->current_wal->filename,
 				 r->confirmed_lsn);
-			close_log(&r->current_wal);
+			log_io_close(&r->current_wal);
 		}
 	}
 
@@ -1063,7 +1048,7 @@ recover(struct recovery_state *r, i64 lsn)
 			result = -1;
 			goto out;
 		}
-		r->current_wal = open_for_read(r, r->wal_class, lsn, 0, NULL);
+		r->current_wal = log_io_open_for_read(r, r->wal_class, lsn, 0, NULL);
 		if (r->current_wal == NULL) {
 			result = -1;
 			goto out;
@@ -1109,7 +1094,7 @@ recover_follow_file(ev_stat *w, int revents __attribute__((unused)))
 	if (result == LOG_EOF) {
 		say_info("done `%s' confirmed_lsn:%" PRIi64, r->current_wal->filename,
 			 r->confirmed_lsn);
-		close_log(&r->current_wal);
+		log_io_close(&r->current_wal);
 		recover_follow_dir((ev_timer *)w, 0);
 	}
 }
@@ -1162,157 +1147,26 @@ recover_finalize(struct recovery_state *r)
 		} else if (r->current_wal->rows == 1) {
 			/* Rename inprogress wal with one row */
 			say_warn("rename unfinished %s wal", r->current_wal->filename);
-			if (inprogress_log_rename(r->current_wal->filename) != 0)
+			if (log_io_inprogress_rename(r->current_wal->filename) != 0)
 				panic("can't rename 'inprogress' wal");
 		} else
 			panic("too many rows in inprogress WAL `%s'", r->current_wal->filename);
 
-		close_log(&r->current_wal);
+		log_io_close(&r->current_wal);
 	}
-}
-
-static struct wal_write_request *
-wal_write_request(const struct tbuf *t)
-{
-	return t->data;
-}
-
-static struct tbuf *
-write_to_disk(void *_state, struct tbuf *t)
-{
-	static struct log_io *wal = NULL, *wal_to_close = NULL;
-	static ev_tstamp last_flush = 0;
-	struct tbuf *reply, *header;
-	struct recovery_state *r = _state;
-	u32 result = 0;
-
-	/* we're not running inside ev_loop, so update ev_now manually */
-	ev_now_update();
-
-	/* caller requested termination */
-	if (t == NULL) {
-		if (wal != NULL)
-			close_log(&wal);
-		recover_free((struct recovery_state*)_state);
-		return NULL;
-	}
-
-	reply = tbuf_alloc(t->pool);
-
-	if (wal == NULL) {
-		int unused;
-		/* Open WAL with '.inprogress' suffix. */
-		wal = open_for_write(r, r->wal_class, wal_write_request(t)->lsn, -1,
-				     &unused);
-	}
-	else if (wal->rows == 1) {
-		/* rename WAL after first successful write to name
-		 * without inprogress suffix*/
-		if (inprogress_log_rename(wal->filename) != 0) {
-			say_error("can't rename inprogress wal");
-			goto fail;
-		}
-	}
-
-	if (wal_to_close != NULL) {
-		if (close_log(&wal_to_close) != 0)
-			goto fail;
-	}
-	if (wal == NULL) {
-		say_syserror("can't open wal");
-		goto fail;
-	}
-	if (fwrite(&wal->class->marker, wal->class->marker_size, 1, wal->f) != 1) {
-		say_syserror("can't write marker to wal");
-		goto fail;
-	}
-
-	header = tbuf_alloc(t->pool);
-	tbuf_ensure(header, sizeof(struct row_v11));
-	header->len = sizeof(struct row_v11);
-
-	row_v11(header)->lsn = wal_write_request(t)->lsn;
-	row_v11(header)->tm = ev_now();
-	row_v11(header)->len = wal_write_request(t)->len;
-	row_v11(header)->data_crc32c =
-		crc32c(0, wal_write_request(t)->data, wal_write_request(t)->len);
-	row_v11(header)->header_crc32c =
-		crc32c(0, header->data + field_sizeof(struct row_v11, header_crc32c),
-		       sizeof(struct row_v11) - field_sizeof(struct row_v11, header_crc32c));
-
-	if (fwrite(header->data, header->len, 1, wal->f) != 1) {
-		say_syserror("can't write row header to wal");
-		goto fail;
-	}
-
-	if (fwrite(wal_write_request(t)->data, wal_write_request(t)->len, 1, wal->f) != 1) {
-		say_syserror("can't write row data to wal");
-		goto fail;
-	}
-
-	/* flush stdio buffer to keep replication in sync */
-	if (fflush(wal->f) < 0) {
-		say_syserror("can't flush wal");
-		goto fail;
-	}
-
-	if (wal->class->fsync_delay > 0 && ev_now() - last_flush >= wal->class->fsync_delay) {
-		if (flush_log(wal) < 0) {
-			say_syserror("can't flush wal");
-			goto fail;
-		}
-		last_flush = ev_now();
-	}
-
-	wal->rows++;
-	if (wal->class->rows_per_file <= wal->rows ||
-	    (wal_write_request(t)->lsn + 1) % wal->class->rows_per_file == 0) {
-		wal_to_close = wal;
-		wal = NULL;
-	}
-
-	tbuf_append(reply, &result, sizeof(result));
-	return reply;
-
-      fail:
-	result = 1;
-	tbuf_append(reply, &result, sizeof(result));
-	return reply;
 }
 
 bool
 wal_write(struct recovery_state *r, u16 tag, u64 cookie, i64 lsn, struct tbuf *row)
 {
-	struct tbuf *m = tbuf_alloc(row->pool);
-	struct msg *a;
-
-	say_debug("wal_write lsn=%" PRIi64, lsn);
-	tbuf_reserve(m, sizeof(struct wal_write_request) + sizeof(tag) + sizeof(cookie) + row->len);
-	m->len = sizeof(struct wal_write_request);
-	wal_write_request(m)->lsn = lsn;
-	wal_write_request(m)->len = row->len + sizeof(tag) + sizeof(cookie);
-	tbuf_append(m, &tag, sizeof(tag));
-	tbuf_append(m, &cookie, sizeof(cookie));
-	tbuf_append(m, row->data, row->len);
-
-	if (write_inbox(r->wal_writer->out, m) == false) {
-		say_warn("wal writer inbox is full");
-		return false;
-	}
-	a = read_inbox();
-
-	u32 reply = read_u32(a->msg);
-	say_debug("wal_write reply=%" PRIu32, reply);
-	if (reply != 0)
-		say_warn("wal writer returned error status");
-	return reply == 0;
+	return wal_writer_write_row(r->writer, tag, cookie, lsn, row);
 }
 
 struct recovery_state *
 recover_init(const char *snap_dirname, const char *wal_dirname,
 	     row_handler row_handler,
-	     int rows_per_file, double fsync_delay,
-	     int inbox_size, int flags, void *data)
+	     int rows_per_file, double fsync_delay, size_t queue_size,
+	     int flags, void *data)
 {
 	struct recovery_state *r = p0alloc(eter_pool, sizeof(*r));
 
@@ -1331,8 +1185,9 @@ recover_init(const char *snap_dirname, const char *wal_dirname,
 	r->wal_class->fsync_delay = fsync_delay;
 	wait_lsn_clear(&r->wait_lsn);
 
+	/** start WAL writer */
 	if ((flags & RECOVER_READONLY) == 0)
-		r->wal_writer = spawn_child("wal_writer", inbox_size, write_to_disk, r);
+		r->writer = wal_writer_init(r, queue_size);
 
 	return r;
 }
@@ -1340,16 +1195,13 @@ recover_init(const char *snap_dirname, const char *wal_dirname,
 void
 recover_free(struct recovery_state *recovery)
 {
-	struct child *writer = recovery->wal_writer;
-	if (writer && writer->out && writer->out->fd > 0) {
-		close(writer->out->fd);
-		usleep(1000);
-	}
+	if (recovery->writer != NULL)
+		wal_writer_destroy(recovery->writer);
 
 	v11_class_free(recovery->snap_class);
 	v11_class_free(recovery->wal_class);
 	if (recovery->current_wal)
-		close_log(&recovery->current_wal);
+		log_io_close(&recovery->current_wal);
 }
 
 void
@@ -1420,7 +1272,7 @@ snapshot_write_row(struct log_io_iter *i, u16 tag, u64 cookie, struct tbuf *row)
 		bytes += row->len + sizeof(struct row_v11);
 
 		while (bytes >= i->io_rate_limit) {
-			flush_log(i->log);
+			log_io_flush(i->log);
 
 			ev_now_update();
 			elapsed = ev_now() - last;
@@ -1448,7 +1300,7 @@ snapshot_save(struct recovery_state *r, void (*f) (struct log_io_iter *))
 
 	memset(&i, 0, sizeof(i));
 
-	snap = open_for_write(r, r->snap_class, r->confirmed_lsn, -1, &save_errno);
+	snap = log_io_open_for_write(r, r->snap_class, r->confirmed_lsn, -1, &save_errno);
 	if (snap == NULL)
 		panic_status(save_errno, "can't open snap for writing");
 
@@ -1478,7 +1330,7 @@ snapshot_save(struct recovery_state *r, void (*f) (struct log_io_iter *))
 	if (unlink(snap->filename) == -1)
 		say_syserror("can't unlink 'inprogress' snapshot");
 
-	close_log(&snap);
+	log_io_close(&snap);
 
 	say_info("done");
 }

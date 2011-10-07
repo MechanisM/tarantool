@@ -152,7 +152,7 @@ typedef struct tarantool_cfg {
 	int32_t	wal_fsync_delay;
 
 	/* size of WAL writer request buffer */
-	int32_t	wal_writer_inbox_size;
+	int32_t	wal_writer_queue_size;
 
 	/*
 	 * Local hot standby (if enabled, the server will run in hot

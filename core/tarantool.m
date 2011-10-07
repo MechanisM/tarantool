@@ -222,6 +222,7 @@ snapshot(void *ev, int events __attribute__((unused)))
 		assert(p == fiber->cw.rpid);
 		return WEXITSTATUS(fiber->cw.rstatus);
 	}
+	recovery_state->writer = NULL;
 
 	fiber_set_name(fiber, "dumper");
 	set_proc_title("dumper (%" PRIu32 ")", getppid());
@@ -318,8 +319,6 @@ create_pid(void)
 void
 tarantool_free(void)
 {
-	if (recovery_state != NULL)
-		recover_free(recovery_state);
 	stat_free();
 
 	if (cfg_filename_fullpath)

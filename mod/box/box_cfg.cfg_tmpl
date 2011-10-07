@@ -43,7 +43,7 @@ rows_per_wal=500000, ro
 wal_fsync_delay=0, ro
 
 # size of WAL writer request buffer
-wal_writer_inbox_size=128, ro
+wal_writer_queue_size=128, ro
 
 # Local hot standby (if enabled, the server will run in hot
 # standby mode, continuously fetching WAL records from wal_dir,

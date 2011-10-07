@@ -57,7 +57,7 @@ configuration:
   snap_io_rate_limit: "0"
   rows_per_wal: "50"
   wal_fsync_delay: "0"
-  wal_writer_inbox_size: "128"
+  wal_writer_queue_size: "128"
   local_hot_standby: "false"
   wal_dir_rescan_delay: "0.1"
   panic_on_snap_error: "true"
@@ -95,7 +95,6 @@ info:
   version: "1.minor.patch-<rev>-<commit>"
   uptime: <uptime>
   pid: <pid>
-  wal_writer_pid: <pid>
   lsn: 3
   recovery_lag: 0.000
   recovery_last_update: 0.000

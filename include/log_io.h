@@ -28,12 +28,13 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <limits.h>
+#include <netinet/in.h> /* struct sockaddr_in */
 
 #include <tarantool_ev.h>
 #include <tbuf.h>
 #include <util.h>
 #include <palloc.h>
-#include <netinet/in.h> /* struct sockaddr_in */
+#include <wal_writer.h>
 
 struct tbuf;
 
@@ -105,7 +106,9 @@ struct recovery_state {
 	struct log_io *current_wal;	/* the WAL we'r currently reading/writing from/to */
 	struct log_io_class *snap_class;
 	struct log_io_class *wal_class;
-	struct child *wal_writer;
+
+	/** WAL writer */
+	struct wal_writer *writer;
 
 	/* row_handler will be presented by most recent format of data
 	   log_io_class->reader is responsible of converting data from old format */
@@ -150,7 +153,7 @@ struct tbuf *convert_to_v11(struct tbuf *orig, u16 tag, u64 cookie, i64 lsn);
 
 struct recovery_state *recover_init(const char *snap_dirname, const char *xlog_dirname,
 				    row_handler row_handler,
-				    int rows_per_file, double fsync_delay, int inbox_size,
+				    int rows_per_file, double fsync_delay, size_t queue_size,
 				    int flags, void *data);
 void recover_free(struct recovery_state *recovery);
 int recover(struct recovery_state *, i64 lsn);
@@ -173,5 +176,63 @@ void recovery_stop_remote(struct recovery_state *r);
 struct log_io_iter;
 void snapshot_write_row(struct log_io_iter *i, u16 tag, u64 cookie, struct tbuf *row);
 void snapshot_save(struct recovery_state *r, void (*loop) (struct log_io_iter *));
+
+/**
+ * Open log_io file for read.
+ *
+ * @param recover is log state.
+ * @param class is log i/o class.
+ * @param lsn is LSN number.
+ * @param suffix is file suffix.
+ * @param filename is log i/o file name.
+ *
+ * @returns pointer on WAL of NULL if error occurred.
+ */
+struct log_io *
+log_io_open_for_read(struct recovery_state *recover, struct log_io_class *class, i64 lsn, int suffix,
+		     const char *filename);
+
+/**
+ * Open log_io file for read.
+ *
+ * @param recover is log state.
+ * @param class is log i/o class.
+ * @param lsn is LSN number.
+ * @param suffix is file suffix.
+ * @param save_errno is error code placed here if error occur and save_errno not NULL.
+ *
+ * @returns pointer on WAL of NULL if error occurred.
+ */
+struct log_io *
+log_io_open_for_write(struct recovery_state *recover, struct log_io_class *class, i64 lsn,
+		      int suffix, int *save_errno);
+
+/**
+ * Rename ".inprogress" file.
+ *
+ * @returns zero on success. On error, -1 is returned.
+ */
+int
+log_io_inprogress_rename(char *filename);
+
+/**
+ * Close log i/o file.
+ *
+ * @params lptr is pointer to log i/o instance.
+ *
+ * @returns zero on success. On error, -1 is returned.
+ */
+int
+log_io_close(struct log_io **lptr);
+
+/**
+ * Flush log i/o file.
+ *
+ * @params lptr is pointer to log i/o instance.
+ *
+ * @returns zero on success. On error, -1 is returned.
+ */
+int
+log_io_flush(struct log_io *log);
 
 #endif /* TARANTOOL_LOG_IO_H_INCLUDED */

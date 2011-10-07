@@ -34,12 +34,16 @@
 #ifndef PIPE_BUF
 #include <sys/param.h>
 #endif
+#include <pthread.h>
 
 #include <fiber.h>
 #include TARANTOOL_CONFIG
 #include "tarantool.h"
 
 int sayfd = STDERR_FILENO;
+
+/** request for to do thread-safe log */
+static pthread_mutex_t say_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static char
 level_to_char(int level)
@@ -113,6 +117,7 @@ say_logger_init(int nonblock)
 void
 vsay(int level, const char *filename, int line, const char *error, const char *format, va_list ap)
 {
+	pthread_mutex_lock(&say_lock);
 	const char *peer_name = fiber_peer_name(fiber);
 	size_t p = 0, len = PIPE_BUF;
 	const char *f;
@@ -124,7 +129,7 @@ vsay(int level, const char *filename, int line, const char *error, const char *f
 		if (error)
 			fprintf(stderr, ": %s", error);
 		fprintf(stderr, "\n");
-		return;
+		goto say_done;
 	}
 
 	ev_now_update();
@@ -159,6 +164,8 @@ vsay(int level, const char *filename, int line, const char *error, const char *f
 		r = write(STDERR_FILENO, buf, p + 1);
 		(void)r;
 	}
+say_done:
+	pthread_mutex_unlock(&say_lock);
 }
 
 void

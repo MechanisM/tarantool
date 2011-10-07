@@ -640,10 +640,9 @@ txn_commit(struct box_txn *txn)
 			tbuf_append(t, txn->req.data, txn->req.len);
 
 			i64 lsn = next_lsn(recovery_state, 0);
-			bool res = !wal_write(recovery_state, wal_tag,
-					      fiber->cookie, lsn, t);
+			bool is_success = wal_writer_write_row(recovery_state->writer, wal_tag, fiber->cookie, lsn, t);
 			confirm_lsn(recovery_state, lsn);
-			if (res)
+			if (!is_success)
 				tnt_raise(LoggedError, :ER_WAL_IO);
 		}
 
@@ -1354,6 +1353,7 @@ mod_reload_config(struct tarantool_cfg *old_conf, struct tarantool_cfg *new_conf
 void
 mod_free(void)
 {
+	recover_free(recovery_state);
 	space_free();
 }
 
@@ -1373,7 +1373,7 @@ mod_init(void)
 	/* recovery initialization */
 	recovery_state = recover_init(cfg.snap_dir, cfg.wal_dir,
 				      recover_row, cfg.rows_per_wal, cfg.wal_fsync_delay,
-				      cfg.wal_writer_inbox_size,
+				      cfg.wal_writer_queue_size,
 				      init_storage ? RECOVER_READONLY : 0, NULL);
 
 	recovery_state->snap_io_rate_limit = cfg.snap_io_rate_limit * 1024 * 1024;
@@ -1473,8 +1473,6 @@ mod_info(struct tbuf *out)
 	tbuf_printf(out, "  version: \"%s\"" CRLF, tarantool_version());
 	tbuf_printf(out, "  uptime: %i" CRLF, (int)tarantool_uptime());
 	tbuf_printf(out, "  pid: %i" CRLF, getpid());
-	tbuf_printf(out, "  wal_writer_pid: %" PRIi64 CRLF,
-		    (i64) recovery_state->wal_writer->pid);
 	tbuf_printf(out, "  lsn: %" PRIi64 CRLF, recovery_state->confirmed_lsn);
 	tbuf_printf(out, "  recovery_lag: %.3f" CRLF, recovery_state->recovery_lag);
 	tbuf_printf(out, "  recovery_last_update: %.3f" CRLF,
