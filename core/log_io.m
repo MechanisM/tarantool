@@ -667,8 +667,8 @@ log_io_open_for_read(struct recovery_state *recover, struct log_io_class *class,
 
 	return l;
       error:
-	/*say_error("open_for_read: failed to open `%s': %s", l->filename,
-		  errmsg);*/
+	say_error("open_for_read: failed to open `%s': %s", l->filename,
+		  errmsg);
 	if (l != NULL) {
 		if (l->f != NULL)
 			fclose(l->f);
