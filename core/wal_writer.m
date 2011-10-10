@@ -334,13 +334,17 @@ worker_loop(void *worker_args)
 			fiber_wakeup(task->fiber);
 		}
 
-		if (writer->curr_log != NULL && writer->curr_log->class->fsync_delay > 0 &&
-		    ev_now() - writer->curr_log_last_flush >= writer->curr_log->class->fsync_delay) {
-			/* time to fsync */
-			log_io_flush(writer->curr_log);
-			writer->curr_log_last_flush = ev_now();
+		if (writer->curr_log != NULL) {
+			/* fflush log */
+			fflush(writer->curr_log->f);
+			/* check fsync time */
+			if (writer->curr_log->class->fsync_delay > 0 &&
+			    ev_now() - writer->curr_log_last_flush >= writer->curr_log->class->fsync_delay) {
+				/* time to fsync */
+				log_io_flush(writer->curr_log);
+				writer->curr_log_last_flush = ev_now();
+			}
 		}
-
 	}
 
 	say_crit("wal writer's worker done");
@@ -437,7 +441,7 @@ task_queue_get_tasks(struct task_queue *queue)
 		struct timespec timeout;
 
 		clock_gettime(CLOCK_REALTIME, &timeout);
-		timeout.tv_nsec += 100000000;
+		timeout.tv_nsec += 100000000; /* 0.1 sec timeout */
 
 		queue->pending_tasks = true;
 		pthread_cond_timedwait(&queue->empty_cond, &queue->lock_mutex, &timeout);
