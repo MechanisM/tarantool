@@ -245,7 +245,7 @@ acceptor_handler(void *data __attribute__((unused)))
 		fiber_io_start(fiber->fd, EV_READ);
 		fiber_io_yield();
 		/* accept connection */
-		client_sock = accept(fiber->fd, &addr, &addrlen);
+		client_sock = accept(fiber->fd, (struct sockaddr*)&addr, &addrlen);
 		if (client_sock == -1) {
 			if (errno == EAGAIN && errno == EWOULDBLOCK) {
 				continue;
@@ -633,7 +633,7 @@ static int
 replication_relay_send_row(struct recovery_state *r __attribute__((unused)), struct tbuf *t)
 {
 	u8 *data = t->data;
-	ssize_t bytes, len = t->len;
+	ssize_t bytes, len = t->size;
 	while (len > 0) {
 		bytes = write(fiber->fd, data, len);
 		if (bytes < 0) {
@@ -647,7 +647,7 @@ replication_relay_send_row(struct recovery_state *r __attribute__((unused)), str
 		data += bytes;
 	}
 
-	say_debug("send row: %" PRIu32 " bytes %s", t->len, tbuf_to_hex(t));
+	say_debug("send row: %" PRIu32 " bytes %s", t->size, tbuf_to_hex(t));
 	return 0;
 shutdown_handler:
 	say_info("the client has closed its replication socket, exiting");

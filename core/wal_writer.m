@@ -238,7 +238,7 @@ wal_writer_write_row(struct wal_writer *writer, u16 tag, u64 cookie, i64 lsn, st
 		return false;
 
 	/* wait result */
-	yield();
+	fiber_yield();
 	return task->output.is_success;
 }
 
@@ -287,12 +287,12 @@ worker_loop(void *worker_args)
 			struct row_v11 header;
 			header.lsn = task->input.lsn;
 			header.tm = ev_now();
-			header.len = sizeof(u16) + sizeof(u64) + task->input.row->len;
+			header.len = sizeof(u16) + sizeof(u64) + task->input.row->size;
 			/* calculate data checksum */
 			header.data_crc32c = 0;
 			header.data_crc32c = crc32c(header.data_crc32c, (u8 *)&task->input.tag, sizeof(u16));
 			header.data_crc32c = crc32c(header.data_crc32c, (u8 *)&task->input.cookie, sizeof(u64));
-			header.data_crc32c = crc32c(header.data_crc32c, task->input.row->data, task->input.row->len);
+			header.data_crc32c = crc32c(header.data_crc32c, task->input.row->data, task->input.row->size);
 			/* calculate header checksum */
 			header.header_crc32c = crc32c(0, (u8 *)&header + sizeof(header.header_crc32c),
 						      sizeof(header) - sizeof(header.header_crc32c));
@@ -317,7 +317,7 @@ worker_loop(void *worker_args)
 				goto task_done;
 			}
 
-			if (fwrite(task->input.row->data, task->input.row->len, 1, writer->curr_log->f) != 1) {
+			if (fwrite(task->input.row->data, task->input.row->size, 1, writer->curr_log->f) != 1) {
 				say_syserror("write row data to wal fail");
 				goto task_done;
 			}

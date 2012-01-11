@@ -101,7 +101,7 @@ recovery_wait_lsn(struct recovery_state *r, i64 lsn)
 	while (lsn < r->confirmed_lsn) {
 		wait_lsn_set(&r->wait_lsn, lsn);
 		@try {
-			yield();
+			fiber_yield();
 		} @finally {
 			wait_lsn_clear(&r->wait_lsn);
 		}
@@ -440,7 +440,7 @@ row_reader_v11(FILE *f, struct palloc_pool *pool)
 	if (fread(m->data, sizeof(struct row_v11), 1, f) != 1)
 		return ROW_EOF;
 
-	m->len = offsetof(struct row_v11, data);
+	m->size = offsetof(struct row_v11, data);
 
 	/* header crc32c calculated on <lsn, tm, len, data_crc32c> */
 	header_crc = crc32c(0, m->data + offsetof(struct row_v11, lsn),
@@ -451,11 +451,11 @@ row_reader_v11(FILE *f, struct palloc_pool *pool)
 		return NULL;
 	}
 
-	tbuf_ensure(m, m->len + row_v11(m)->len);
+	tbuf_ensure(m, m->size + row_v11(m)->len);
 	if (fread(row_v11(m)->data, row_v11(m)->len, 1, f) != 1)
 		return ROW_EOF;
 
-	m->len += row_v11(m)->len;
+	m->size += row_v11(m)->len;
 
 	data_crc = crc32c(0, row_v11(m)->data, row_v11(m)->len);
 	if (row_v11(m)->data_crc32c != data_crc) {
@@ -1219,7 +1219,7 @@ write_rows(struct log_io_iter *i)
 
 	row = tbuf_alloc(eter_pool);
 	tbuf_ensure(row, sizeof(struct row_v11));
-	row->len = sizeof(struct row_v11);
+	row->size = sizeof(struct row_v11);
 
 	goto start;
 	for (;;) {
@@ -1232,17 +1232,17 @@ write_rows(struct log_io_iter *i)
 
 		row_v11(row)->lsn = 0;	/* unused */
 		row_v11(row)->tm = ev_now();
-		row_v11(row)->len = data->len;
-		row_v11(row)->data_crc32c = crc32c(0, data->data, data->len);
+		row_v11(row)->len = data->size;
+		row_v11(row)->data_crc32c = crc32c(0, data->data, data->size);
 		row_v11(row)->header_crc32c =
 			crc32c(0, row->data + field_sizeof(struct row_v11, header_crc32c),
 			       sizeof(struct row_v11) - field_sizeof(struct row_v11,
 								     header_crc32c));
 
-		if (fwrite(row->data, row->len, 1, l->f) != 1)
+		if (fwrite(row->data, row->size, 1, l->f) != 1)
 			panic("fwrite");
 
-		if (fwrite(data->data, data->len, 1, l->f) != 1)
+		if (fwrite(data->data, data->size, 1, l->f) != 1)
 			panic("fwrite");
 
 		prelease_after(fiber->gc_pool, 128 * 1024);
@@ -1260,7 +1260,7 @@ snapshot_write_row(struct log_io_iter *i, u16 tag, u64 cookie, struct tbuf *row)
 
 	tbuf_append(wal_row, &tag, sizeof(tag));
 	tbuf_append(wal_row, &cookie, sizeof(cookie));
-	tbuf_append(wal_row, row->data, row->len);
+	tbuf_append(wal_row, row->data, row->size);
 
 	i->to = wal_row;
 	if (i->io_rate_limit > 0) {
@@ -1269,7 +1269,7 @@ snapshot_write_row(struct log_io_iter *i, u16 tag, u64 cookie, struct tbuf *row)
 			last = ev_now();
 		}
 
-		bytes += row->len + sizeof(struct row_v11);
+		bytes += row->size + sizeof(struct row_v11);
 
 		while (bytes >= i->io_rate_limit) {
 			log_io_flush(i->log);

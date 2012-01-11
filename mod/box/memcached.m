@@ -32,6 +32,7 @@
 #include "say.h"
 #include "stat.h"
 #include "salloc.h"
+#include "pickle.h"
 
 #define STAT(_)					\
         _(MEMC_GET, 1)				\
@@ -45,7 +46,7 @@ STRS(memcached_stat, STAT);
 static int stat_base;
 static struct fiber *memcached_expire = NULL;
 
-static struct index *memcached_index;
+static Index *memcached_index;
 
 /* memcached tuple format:
    <key, meta, data> */
@@ -129,7 +130,7 @@ delete(void *key)
 static struct box_tuple *
 find(void *key)
 {
-	return memcached_index->find(memcached_index, key);
+	return [memcached_index find: key];
 }
 
 static struct meta *
@@ -196,7 +197,7 @@ print_stats()
 	tbuf_printf(out, "STAT limit_maxbytes %"PRIu64"\r\n", (u64)(cfg.slab_alloc_arena * (1 << 30)));
 	tbuf_printf(out, "STAT threads 1\r\n");
 	tbuf_printf(out, "END\r\n");
-	iov_add(out->data, out->len);
+	iov_add(out->data, out->size);
 }
 
 void memcached_get(struct box_txn *txn, size_t keys_count, struct tbuf *keys,
@@ -261,8 +262,8 @@ void memcached_get(struct box_txn *txn, size_t keys_count, struct tbuf *keys,
 		if (show_cas) {
 			struct tbuf *b = tbuf_alloc(fiber->gc_pool);
 			tbuf_printf(b, "VALUE %.*s %"PRIu32" %"PRIu32" %"PRIu64"\r\n", key_len, (u8 *)key, m->flags, value_len, m->cas);
-			iov_add_unsafe(b->data, b->len);
-			stats.bytes_written += b->len;
+			iov_add_unsafe(b->data, b->size);
+			stats.bytes_written += b->size;
 		} else {
 			iov_add_unsafe("VALUE ", 6);
 			iov_add_unsafe(key, key_len);
@@ -281,13 +282,13 @@ flush_all(void *data)
 {
 	uintptr_t delay = (uintptr_t)data;
 	fiber_sleep(delay - ev_now());
-	khash_t(lstr_ptr_map) *map = memcached_index->idx.str_hash;
-	for (khiter_t i = kh_begin(map); i != kh_end(map); i++) {
-		if (kh_exist(map, i)) {
-			struct box_tuple *tuple = kh_value(map, i);
-			meta(tuple)->exptime = 1;
-		}
+	struct box_tuple *tuple;
+	struct iterator *it = [memcached_index allocIterator];
+	[memcached_index initIterator: it];
+	while ((tuple = it->next(it))) {
+	       meta(tuple)->exptime = 1;
 	}
+	it->free(it);
 }
 
 #define STORE									\
@@ -339,7 +340,7 @@ memcached_handler(void *_data __attribute__((unused)))
 		if (p == 1) {
 			batch_count++;
 			/* some unparsed commands remain and batch count less than 20 */
-			if (fiber->rbuf->len > 0 && batch_count < 20)
+			if (fiber->rbuf->size > 0 && batch_count < 20)
 				goto dispatch;
 		}
 
@@ -352,7 +353,7 @@ memcached_handler(void *_data __attribute__((unused)))
 		stats.bytes_written += r;
 		fiber_gc();
 
-		if (p == 1 && fiber->rbuf->len > 0) {
+		if (p == 1 && fiber->rbuf->size > 0) {
 			batch_count = 0;
 			goto dispatch;
 		}
@@ -414,71 +415,93 @@ memcached_init(void)
 
 	stat_base = stat_register(memcached_stat_strs, memcached_stat_MAX);
 
-	memcached_index = &space[cfg.memcached_space].index[0];
+	memcached_index = space[cfg.memcached_space].index[0];
 }
 
 void
 memcached_space_init()
 {
-	struct space *memc_ns;
-	struct index *memc_index;
+        if (cfg.memcached_port == 0)
+                return;
 
-	/* configure memcached space */
-	memc_ns = &space[cfg.memcached_space];
-	memc_ns->enabled = true;
-	memc_ns->cardinality = 4;
-	memc_ns->n = cfg.memcached_space;
+	/* Configure memcached space. */
+	struct space *memc_s = &space[cfg.memcached_space];
+	memc_s->enabled = true;
+	memc_s->cardinality = 4;
+	memc_s->n = cfg.memcached_space;
 
-	/* configure memcached index */
-	memc_index = &memc_ns->index[0];
+	struct key_def key_def;
+	/* Configure memcached index key. */
+	key_def.part_count = 1;
+	key_def.is_unique = true;
 
-	/* configure memcached index's key */
-	memc_index->key_cardinality = 1;
+	key_def.parts = salloc(sizeof(struct key_part));
+	key_def.cmp_order = salloc(sizeof(u32));
 
-	memc_index->key_field = salloc(sizeof(memc_index->key_field[0]));
-	memc_index->field_cmp_order = salloc(sizeof(u32));
-
-	if (memc_index->key_field == NULL || memc_index->field_cmp_order == NULL)
+	if (key_def.parts == NULL || key_def.cmp_order == NULL)
 		panic("out of memory when configuring memcached_space");
 
-	memc_index->key_field[0].fieldno = 0;
-	memc_index->key_field[0].type = STRING;
+	key_def.parts[0].fieldno = 0;
+	key_def.parts[0].type = STRING;
 
-	/* configure memcached index compare order */
-	memc_index->field_cmp_order_cnt = 1;
-	memc_index->field_cmp_order[0] = 0;
+	key_def.max_fieldno = 1;
+	key_def.cmp_order[0] = 0;
 
-	memc_index->unique = true;
-	memc_index->type = HASH;
-	memc_index->enabled = true;
-	memc_index->n = 0;
-	index_init(memc_index, memc_ns, 0);
+	/* Configure memcached index. */
+	Index *memc_index = memc_s->index[0] = [Index alloc: HASH :&key_def];
+	[memc_index init: HASH :&key_def :memc_s :0];
+}
+
+/** Delete a bunch of expired keys. */
+
+void
+memcached_delete_expired_keys(struct tbuf *keys_to_delete)
+{
+	int expired_keys = 0;
+
+	while (keys_to_delete->size > 0) {
+		@try {
+			delete(read_field(keys_to_delete));
+			expired_keys++;
+		}
+		@catch (ClientError *e) {
+			/* expire is off when replication is on */
+			assert(e->errcode != ER_NONMASTER);
+			/* The error is already logged. */
+		}
+	}
+	stat_collect(stat_base, MEMC_EXPIRED_KEYS, expired_keys);
+
+	double delay = ((double) cfg.memcached_expire_per_loop *
+			cfg.memcached_expire_full_sweep /
+			([memcached_index size] + 1));
+	if (delay > 1)
+		delay = 1;
+	fiber_setcancelstate(true);
+	fiber_sleep(delay);
+	fiber_setcancelstate(false);
 }
 
 void
 memcached_expire_loop(void *data __attribute__((unused)))
 {
-	static khiter_t i;
-	khash_t(lstr_ptr_map) *map = memcached_index->idx.str_hash;
+	struct box_tuple *tuple = NULL;
 
 	say_info("memcached expire fiber started");
-	for (;;) {
-		if (i > kh_end(map))
-			i = kh_begin(map);
+	struct iterator *it = [memcached_index allocIterator];
+	@try {
+restart:
+		if (tuple == NULL)
+			[memcached_index initIterator: it];
 
 		struct tbuf *keys_to_delete = tbuf_alloc(fiber->gc_pool);
-		int expired_keys = 0;
 
-		for (int j = 0; j < cfg.memcached_expire_per_loop; j++, i++) {
-			if (i == kh_end(map)) {
-				i = kh_begin(map);
+		for (int j = 0; j < cfg.memcached_expire_per_loop; j++) {
+
+			tuple = it->next(it);
+
+			if (tuple == NULL)
 				break;
-			}
-
-			if (!kh_exist(map, i))
-				continue;
-
-			struct box_tuple *tuple = kh_value(map, i);
 
 			if (!expired(tuple))
 				continue;
@@ -486,28 +509,11 @@ memcached_expire_loop(void *data __attribute__((unused)))
 			say_debug("expire tuple %p", tuple);
 			tbuf_append_field(keys_to_delete, tuple->data);
 		}
-
-		while (keys_to_delete->len > 0) {
-			@try {
-				delete(read_field(keys_to_delete));
-				expired_keys++;
-			}
-			@catch (ClientError *e) {
-				/* expire is off when replication is on */
-				assert(e->errcode != ER_NONMASTER);
-				/* The error is already logged. */
-			}
-		}
-		stat_collect(stat_base, MEMC_EXPIRED_KEYS, expired_keys);
-
+		memcached_delete_expired_keys(keys_to_delete);
 		fiber_gc();
-
-		double delay = (double)cfg.memcached_expire_per_loop * cfg.memcached_expire_full_sweep / (map->size + 1);
-		if (delay > 1)
-			delay = 1;
-		fiber_setcancelstate(true);
-		fiber_sleep(delay);
-		fiber_setcancelstate(false);
+		goto restart;
+	} @finally {
+		it->free(it);
 	}
 }
 

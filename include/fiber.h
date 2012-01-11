@@ -144,7 +144,8 @@ fiber_io_yield();
 void
 fiber_io_stop(int fd, int events);
 
-void yield(void);
+void
+fiber_yield(void);
 void fiber_destroy_all();
 
 struct msg *read_inbox(void);
@@ -153,11 +154,11 @@ ssize_t fiber_bread(struct tbuf *, size_t v);
 inline static void iov_add_unsafe(const void *buf, size_t len)
 {
 	struct iovec *v;
-	assert(fiber->iov->size - fiber->iov->len >= sizeof(*v));
-	v = fiber->iov->data + fiber->iov->len;
+	assert(fiber->iov->capacity - fiber->iov->size >= sizeof(*v));
+	v = fiber->iov->data + fiber->iov->size;
 	v->iov_base = (void *)buf;
 	v->iov_len = len;
-	fiber->iov->len += sizeof(*v);
+	fiber->iov->size += sizeof(*v);
 	fiber->iov_cnt++;
 }
 
@@ -195,8 +196,10 @@ ssize_t fiber_write(const void *buf, size_t count);
 int fiber_close(void);
 void fiber_cleanup(void);
 void fiber_gc(void);
+bool fiber_checkstack();
 void fiber_call(struct fiber *callee);
 void fiber_wakeup(struct fiber *f);
+struct fiber *fiber_find(int fid);
 /** Cancel a fiber. A cancelled fiber will have
  * tnt_FiberCancelException raised in it.
  *

@@ -45,13 +45,13 @@ default_remote_row_handler(struct recovery_state *r, struct tbuf *row);
 static struct tbuf *
 remote_row_reader_v11()
 {
-	ssize_t to_read = sizeof(struct row_v11) - fiber->rbuf->len;
+	ssize_t to_read = sizeof(struct row_v11) - fiber->rbuf->size;
 
 	if (to_read > 0 && fiber_bread(fiber->rbuf, to_read) <= 0)
 		goto error;
 
 	ssize_t request_len = row_v11(fiber->rbuf)->len + sizeof(struct row_v11);
-	to_read = request_len - fiber->rbuf->len;
+	to_read = request_len - fiber->rbuf->size;
 
 	if (to_read > 0 && fiber_bread(fiber->rbuf, to_read) <= 0)
 		goto error;
@@ -190,6 +190,7 @@ recovery_follow_remote(struct recovery_state *r, const char *remote)
 
 	rc = sscanf(remote, "%31[^:]:%i", ip_addr, &port);
 	assert(rc == 2);
+	(void)rc;
 
 	if (inet_aton(ip_addr, &server) < 0) {
 		say_syserror("inet_aton: %s", ip_addr);

@@ -25,29 +25,13 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
-#include <mod/box/assoc.h>
+#import <objc/Object.h>
+#include <stdbool.h>
+#include <util.h>
 
-/**
- * A field reference used for TREE indexes. Either stores a copy
- * of the corresponding field in the tuple or points to that field
- * in the tuple (depending on field length).
- */
-
-struct field {
-	/** Field data length. */
-	u32 len;
-	/** Actual field data. For small fields we store the value
-	 * of the field (u32, u64, strings up to 8 bytes), for
-	 * longer fields, we store a pointer to field data in the
-	 * tuple in the primary index.
-	 */
-	union {
-		u32 u32;
-		u64 u64;
-		u8 data[sizeof(u64)];
-		void *data_ptr;
-	};
-};
+struct box_tuple;
+struct space;
+struct index;
 
 /*
  * Possible field data types. Can't use STRS/ENUM macros for them,
@@ -60,92 +44,98 @@ extern const char *field_data_type_strs[];
 enum index_type { HASH, TREE, index_type_MAX };
 extern const char *index_type_strs[];
 
-struct index_tree_el {
-	struct box_tuple *tuple;
-	struct field key[];
+/** Descriptor of a single part in a multipart key. */
+struct key_part {
+	u32 fieldno;
+	enum field_data_type type;
 };
 
-#define INDEX_TREE_EL_SIZE(index) \
-	(sizeof(struct index_tree_el) + sizeof(struct field) * (index)->key_cardinality)
-
-#include <third_party/sptree.h>
-SPTREE_DEF(str_t, realloc);
-
-/* Indexes at preallocated search positions.  */
-enum { POS_READ = 0, POS_WRITE = 1, POS_MAX = 2 };
-
-struct index {
-	bool enabled;
-	bool unique;
-
-	size_t (*size)(struct index *index);
-	struct box_tuple *(*find)(struct index *index, void *key); /* only for unique lookups */
-	struct box_tuple  *(*min)(struct index  *index);
-	struct box_tuple  *(*max)(struct index  *index);
-	struct box_tuple *(*find_by_tuple)(struct index * index, struct box_tuple * pattern);
-	void (*remove)(struct index *index, struct box_tuple *);
-	void (*replace)(struct index *index, struct box_tuple *, struct box_tuple *);
-	void (*iterator_init)(struct index *, int cardinality, void *key);
-	union {
-		khash_t(lstr_ptr_map) * str_hash;
-		khash_t(int_ptr_map) * int_hash;
-		khash_t(int64_ptr_map) * int64_hash;
-		khash_t(int_ptr_map) * hash;
-		sptree_str_t *tree;
-	} idx;
-	struct iterator {
-		union {
-			struct sptree_str_t_iterator *t_iter;
-			khiter_t h_iter;
-		};
-		struct box_tuple *(*next)(struct index *);
-		struct box_tuple *(*next_equal)(struct index *);
-	} iterator;
-	/* Reusable iteration positions, to save on memory allocation. */
-	struct index_tree_el *position[POS_MAX];
-
-	struct space *space;
-
+/* Descriptor of a multipart key. */
+struct key_def {
 	/* Description of parts of a multipart index. */
-	struct {
-		u32 fieldno;
-		enum field_data_type type;
-	} *key_field;
+	struct key_part *parts;
 	/*
-	 * An array holding field positions in key_field array.
+	 * An array holding field positions in 'parts' array.
 	 * Imagine there is index[1] = { key_field[0].fieldno=5,
 	 * key_field[1].fieldno=3 }.
-	 * key_field array will contain data from key_field[0] and
-	 * key_field[1] respectively. field_cmp_order_cnt will be 5,
-	 * and field_cmp_order array will hold offsets of
-	 * field 3 and 5 in key_field array: -1, -1, 0, -1, 1.
+	 * 'parts' array for such index contains data from
+	 * key_field[0] and key_field[1] respectively.
+	 * max_fieldno is 5, and cmp_order array holds offsets of
+	 * field 3 and 5 in 'parts' array: -1, -1, 0, -1, 1.
 	 */
-	u32 *field_cmp_order;
-	/* max fieldno in key_field array + 1 */
-	u32 field_cmp_order_cnt;
-	/* Size of key_field array */
-	u32 key_cardinality;
-	/* relative offset of the index in the namespace */
-	u32 n;
+	u32 *cmp_order;
+	/* The size of the 'parts' array. */
+	u32 part_count;
+	/*
+	 * The size of 'cmp_order' array (= max fieldno in 'parts'
+	 * array).
+	 */
+	u32 max_fieldno;
+	bool is_unique;
+};
 
+@class Index;
 
+@interface Index: Object {
+ @public
+	struct space *space;
+	/*
+	 * Pre-allocated iterator to speed up the main case of
+	 * box_process(). Should not be used elsewhere.
+	 */
+	struct iterator *position;
+	/* Description of a possibly multipart key. */
+	struct key_def key_def;
 	enum index_type type;
+	bool enabled;
+	/* Relative offset of the index in its namespace. */
+	u32 n;
+};
+
++ (Index *) alloc: (enum index_type) type_arg :(struct key_def *) key_def_arg;
+/**
+ * Initialize index instance.
+ *
+ * @param space    space the index belongs to
+ * @param key      key part description
+ */
+- (id) init: (enum index_type) type_arg :(struct key_def *) key_def_arg
+	:(struct space *) space_arg :(u32) n_arg;
+/** Destroy and free index instance. */
+- (void) free;
+/**
+ * Finish index construction.
+ */
+- (void) enable;
+- (size_t) size;
+- (struct box_tuple *) min;
+- (struct box_tuple *) max;
+- (struct box_tuple *) find: (void *) key_arg; /* only for unique lookups */
+- (struct box_tuple *) findByTuple: (struct box_tuple *) tuple;
+- (void) remove: (struct box_tuple *) tuple;
+- (void) replace: (struct box_tuple *) old_tuple :(struct box_tuple *) new_tuple;
+/**
+ * Create a structure to represent an iterator. Must be
+ * initialized separately.
+ */
+- (struct iterator *) allocIterator;
+- (void) initIterator: (struct iterator *) iterator;
+- (void) initIterator: (struct iterator *) iterator :(void *) key
+			:(int) part_count;
+@end
+
+struct iterator {
+	struct box_tuple *(*next)(struct iterator *);
+	struct box_tuple *(*next_equal)(struct iterator *);
+	void (*free)(struct iterator *);
 };
 
 #define foreach_index(n, index_var)					\
-	for (struct index *index_var = space[(n)].index;		\
-	     index_var->key_cardinality != 0;				\
-	     index_var++)						\
-		if (index_var->enabled)
+	Index *index_var;						\
+	for (Index **index_ptr = space[(n)].index;			\
+	     *index_ptr != nil; index_ptr++)				\
+		if ((index_var = *index_ptr)->enabled)
 
-void
-index_init(struct index *index, struct space *space, size_t estimated_rows);
-
-void
-index_free(struct index *index);
-
-struct box_txn;
-void validate_indexes(struct box_txn *txn);
 void build_indexes(void);
 
 #endif /* TARANTOOL_BOX_INDEX_H_INCLUDED */
