@@ -48,6 +48,52 @@
 #include "memcached.h"
 #include "box_lua.h"
 
+
+struct op_arg {
+	union {
+		/** set operands */
+		struct {
+			/** set length */
+			u32 length;
+			/** set value */
+			void *value;
+		} set;
+		/** arith operands */
+		struct {
+			union {
+				/** 8-bit value */
+				i8 i8_val;
+				/** 16-bit value */
+				i16 i16_val;
+				/** 32-bit value */
+				i32 i32_val;
+				/** 64 bit value */
+				i64 i64_val;
+			};
+			/** arith value size */
+			u32 size;
+		} arith;
+		/** splice operands */
+		struct {
+			/** splice position */
+			i32 offset;
+			/** cut length */
+			i32 length;
+			/** paste list length */
+			i32 list_length;
+			/** paste list */
+			void *list;
+		} splice;
+	};
+	/** raw operand data */
+	struct {
+		/** raw length */
+		u32 length;
+		/** raw value */
+		void *value;
+	} raw;
+};
+
 /** update fields operation */
 struct update_op {
 	/** fields number */
@@ -57,50 +103,7 @@ struct update_op {
 	/* skip this operation */
 	bool skip;
 	/** operands */
-	struct {
-		union {
-			/** set operands */
-			struct {
-				/** set length */
-				u32 length;
-				/** set value */
-				void *value;
-			} set;
-			/** arith operands */
-			struct {
-				union {
-					/** 8-bit value */
-					i8 i8_val;
-					/** 16-bit value */
-					i16 i16_val;
-					/** 32-bit value */
-					i32 i32_val;
-					/** 64 bit value */
-					i64 i64_val;
-				};
-				/** arith value size */
-				u32 size;
-			} arith;
-			/** splice operands */
-			struct {
-				/** splice position */
-				i32 offset;
-				/** cut length */
-				i32 length;
-				/** paste list length */
-				i32 list_length;
-				/** paste list */
-				void *list;
-			} splice;
-		};
-		/** raw operand data */
-		struct {
-			/** raw length */
-			u32 length;
-			/** raw value */
-			void *value;
-		} raw;
-	} operand;
+	struct op_arg arg;
 	/** field length after apply operation */
 	u32 new_field_len;
 };
@@ -324,8 +327,8 @@ parse_update_fields_command(struct tbuf *data)
 		/* read operation */
 		op->field_no = read_u32(data);
 		op->opcode = read_u8(data);
-		op->operand.raw.value = read_field(data);
-		op->operand.raw.length = load_varint32(&op->operand.raw.value);
+		op->arg.raw.value = read_field(data);
+		op->arg.raw.length = load_varint32(&op->arg.raw.value);
 	}
 	/* check last data length, it must be fully read */
 	if (data->len != 0)
@@ -345,9 +348,9 @@ update_op_cmp(const void *op1_ptr, const void *op2_ptr)
 	if (op1->field_no > op2->field_no)
 		return 1;
 
-	if (op1->operand.raw.value < op2->operand.raw.value)
+	if (op1->arg.raw.value < op2->arg.raw.value)
 		return -1;
-	if (op1->operand.raw.value > op2->operand.raw.value)
+	if (op1->arg.raw.value > op2->arg.raw.value)
 		return 1;
 	return 0;
 }
@@ -356,10 +359,10 @@ static void
 parse_update_operations_set(struct update_op *op, u32 field_len __attribute__((unused)))
 {
 	/* parse set operands */
-	op->operand.set.length = op->operand.raw.length;
-	op->operand.set.value = op->operand.raw.value;
+	op->arg.set.length = op->arg.raw.length;
+	op->arg.set.value = op->arg.raw.value;
 	/* save fields length */
-	op->new_field_len = op->operand.set.length;
+	op->new_field_len = op->arg.set.length;
 }
 
 static void
@@ -370,56 +373,56 @@ parse_update_operations_arith(struct update_op *op, u32 field_len)
 		tnt_raise(ClientError, :ER_TYPE_MISMATCH,
 		       "operation atirh: field type shoud be int32");
 
-	if (op->operand.raw.length != sizeof(i32))
+	if (op->arg.raw.length != sizeof(i32))
 		tnt_raise(ClientError, :ER_TYPE_MISMATCH,
 		       "operation atirh: operand type shoud be int32");
 
 	/* parse arith operands */
-	op->operand.arith.size = op->operand.raw.length;
-	op->operand.arith.i32_val = *(i32*)op->operand.raw.value;
+	op->arg.arith.size = op->arg.raw.length;
+	op->arg.arith.i32_val = *(i32*)op->arg.raw.value;
 	/* save fields length */
-	op->new_field_len = op->operand.arith.size;
+	op->new_field_len = op->arg.arith.size;
 }
 
 static void
 parse_update_operations_splice(struct update_op *op, u32 field_len)
 {
 	struct tbuf operands = {
-		.len = op->operand.raw.length,
-		.size = op->operand.raw.length,
-		.data = op->operand.raw.value,
+		.len = op->arg.raw.length,
+		.size = op->arg.raw.length,
+		.data = op->arg.raw.value,
 		.pool = NULL
 	};
 
 	/* read offset */
 	void *offset_field = read_field(&operands);
-	op->operand.splice.offset = field_to_i32(offset_field);
-	if (op->operand.splice.offset < 0) {
-		if (-op->operand.splice.offset > field_len)
+	op->arg.splice.offset = field_to_i32(offset_field);
+	if (op->arg.splice.offset < 0) {
+		if (-op->arg.splice.offset > field_len)
 			tnt_raise(ClientError, :ER_INVALID_CMD_FORMAT,
 				  "operation splice: offset is out of bound");
-		op->operand.splice.offset = op->operand.splice.offset + field_len;
-	} else if (op->operand.splice.offset > field_len) {
-		op->operand.splice.offset = field_len;
+		op->arg.splice.offset = op->arg.splice.offset + field_len;
+	} else if (op->arg.splice.offset > field_len) {
+		op->arg.splice.offset = field_len;
 	}
 
 	/* read length */
 	void *length_field = read_field(&operands);
-	op->operand.splice.length = field_to_i32(length_field);
-	if (op->operand.splice.length < 0) {
-		if (-op->operand.splice.length > (field_len - op->operand.splice.offset))
-			op->operand.splice.length = 0;
+	op->arg.splice.length = field_to_i32(length_field);
+	if (op->arg.splice.length < 0) {
+		if (-op->arg.splice.length > (field_len - op->arg.splice.offset))
+			op->arg.splice.length = 0;
 		else
-			op->operand.splice.length = op->operand.splice.length
-				+ field_len - op->operand.splice.offset;
-	} else if (op->operand.splice.length > (field_len - op->operand.splice.offset)) {
-		op->operand.splice.length = field_len - op->operand.splice.offset;
+			op->arg.splice.length = op->arg.splice.length
+				+ field_len - op->arg.splice.offset;
+	} else if (op->arg.splice.length > (field_len - op->arg.splice.offset)) {
+		op->arg.splice.length = field_len - op->arg.splice.offset;
 	}
 
 	/* read list */
 	void *list_field = read_field(&operands);
-	op->operand.splice.list_length = load_varint32(&list_field);
-	op->operand.splice.list = list_field;
+	op->arg.splice.list_length = load_varint32(&list_field);
+	op->arg.splice.list = list_field;
 
 	/* check last operands data length, it must be fully read */
 	if (operands.len != 0)
@@ -427,9 +430,9 @@ parse_update_operations_splice(struct update_op *op, u32 field_len)
 			  "operation splice: bad operands");
 
 	/* save fields length */
-	op->new_field_len = op->operand.splice.offset;
-	op->new_field_len += op->operand.splice.list_length;
-	op->new_field_len += field_len - (op->operand.splice.offset + op->operand.splice.length);
+	op->new_field_len = op->arg.splice.offset;
+	op->new_field_len += op->arg.splice.list_length;
+	op->new_field_len += field_len - (op->arg.splice.offset + op->arg.splice.length);
 }
 
 static void
@@ -533,7 +536,7 @@ do_update_op_set(struct update_op *op, struct tbuf **field_ptr,
 {
 	struct tbuf *field = *field_ptr;
 
-	u32 new_field_len = varint32_sizeof(op->operand.set.length) + op->operand.set.length;
+	u32 new_field_len = varint32_sizeof(op->arg.set.length) + op->arg.set.length;
 	if (new_field_len > field->size) {
 		/* operation can not be apply in place, create separate buffer */
 		if (*inplace) {
@@ -547,8 +550,8 @@ do_update_op_set(struct update_op *op, struct tbuf **field_ptr,
 	}
 
 	/* copy new field */
-	void *field_value = save_varint32(field->data, op->operand.set.length);
-	memcpy(field_value, op->operand.set.value, op->operand.set.length);
+	void *field_value = save_varint32(field->data, op->arg.set.length);
+	memcpy(field_value, op->arg.set.value, op->arg.set.length);
 	field->len = new_field_len;
 }
 
@@ -560,16 +563,16 @@ do_update_op_arith(struct update_op *op, struct tbuf **field_ptr,
 	void *field_value = field->data + varint32_sizeof(field->len);
 	switch (op->opcode) {
 	case UPDATE_ADD_INT:
-		*(i32 *)field_value += op->operand.arith.i32_val;
+		*(i32 *)field_value += op->arg.arith.i32_val;
 		break;
 	case UPDATE_BIT_AND_INT:
-		*(u32 *)field_value &= op->operand.arith.i32_val;
+		*(u32 *)field_value &= op->arg.arith.i32_val;
 		break;
 	case UPDATE_BIT_XOR_INT:
-		*(u32 *)field_value ^= op->operand.arith.i32_val;
+		*(u32 *)field_value ^= op->arg.arith.i32_val;
 		break;
 	case UPDATE_BIT_OR_INT:
-		*(u32 *)field_value |= op->operand.arith.i32_val;
+		*(u32 *)field_value |= op->arg.arith.i32_val;
 		break;
 	}
 }
@@ -594,11 +597,11 @@ do_update_op_splice(struct update_op *op, struct tbuf **field_ptr,
 	u32 field_length = field->len - varint32_sizeof(field->len);
 	void *field_value = field->data + varint32_sizeof(field->len);
 
-	tbuf_append(new_field, field_value, op->operand.splice.offset);
-	tbuf_append(new_field, op->operand.splice.list, op->operand.splice.list_length);
+	tbuf_append(new_field, field_value, op->arg.splice.offset);
+	tbuf_append(new_field, op->arg.splice.list, op->arg.splice.list_length);
 	tbuf_append(new_field,
-		    field_value + op->operand.splice.offset + op->operand.splice.length,
-		    field_length - (op->operand.splice.offset + op->operand.splice.length));
+		    field_value + op->arg.splice.offset + op->arg.splice.length,
+		    field_length - (op->arg.splice.offset + op->arg.splice.length));
 
 	*field = *new_field;
 }
