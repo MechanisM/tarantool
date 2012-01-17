@@ -49,7 +49,7 @@
 #include "box_lua.h"
 
 /** update fields operation */
-struct update_fields_op {
+struct update_op {
 	/** fields number */
 	u32 field_no;
 	/** operation code */
@@ -114,7 +114,7 @@ struct update_fields_cmd {
 	/** number of operation in the command */
 	u32 op_cnt;
 	/** operations */
-	struct update_fields_op *op;
+	struct update_op *op;
 	/** new tuple length after apply all operations */
 	u32 new_tuple_len;
 };
@@ -317,9 +317,9 @@ parse_update_fields_command(struct tbuf *data)
 		tnt_raise(IllegalParams, :"no operations for update");
 
 	/* read update operations */
-	cmd->op = palloc(fiber->gc_pool, cmd->op_cnt * sizeof(struct update_fields_op));
+	cmd->op = palloc(fiber->gc_pool, cmd->op_cnt * sizeof(struct update_op));
 	for (int i = 0; i < cmd->op_cnt; ++i) {
-		struct update_fields_op *op = &cmd->op[i];
+		struct update_op *op = &cmd->op[i];
 
 		/* read operation */
 		op->field_no = read_u32(data);
@@ -335,10 +335,10 @@ parse_update_fields_command(struct tbuf *data)
 }
 
 static int
-update_fields_op_cmp(const void *op1_ptr, const void *op2_ptr)
+update_op_cmp(const void *op1_ptr, const void *op2_ptr)
 {
-	const struct update_fields_op *op1 = op1_ptr;
-	const struct update_fields_op *op2 = op2_ptr;
+	const struct update_op *op1 = op1_ptr;
+	const struct update_op *op2 = op2_ptr;
 
 	if (op1->field_no < op2->field_no)
 		return -1;
@@ -353,7 +353,7 @@ update_fields_op_cmp(const void *op1_ptr, const void *op2_ptr)
 }
 
 static void
-parse_update_fields_operations_set(struct update_fields_op *op, u32 field_len __attribute__((unused)))
+parse_update_operations_set(struct update_op *op, u32 field_len __attribute__((unused)))
 {
 	/* parse set operands */
 	op->operand.set.length = op->operand.raw.length;
@@ -363,7 +363,7 @@ parse_update_fields_operations_set(struct update_fields_op *op, u32 field_len __
 }
 
 static void
-parse_update_fields_operations_arith(struct update_fields_op *op, u32 field_len)
+parse_update_operations_arith(struct update_op *op, u32 field_len)
 {
 	/* check arguments */
 	if (field_len != sizeof(i32))
@@ -382,7 +382,7 @@ parse_update_fields_operations_arith(struct update_fields_op *op, u32 field_len)
 }
 
 static void
-parse_update_fields_operations_splice(struct update_fields_op *op, u32 field_len)
+parse_update_operations_splice(struct update_op *op, u32 field_len)
 {
 	struct tbuf operands = {
 		.len = op->operand.raw.length,
@@ -433,10 +433,10 @@ parse_update_fields_operations_splice(struct update_fields_op *op, u32 field_len
 }
 
 static void
-parse_update_fields_operations(struct box_txn *txn, struct update_fields_cmd *cmd)
+parse_update_operations(struct box_txn *txn, struct update_fields_cmd *cmd)
 {
 	/* sort operations by fields  */
-	qsort(cmd->op, cmd->op_cnt, sizeof(struct update_fields_op), update_fields_op_cmp);
+	qsort(cmd->op, cmd->op_cnt, sizeof(struct update_op), update_op_cmp);
 
 	void *old_tuple_data = (uint8_t *)txn->old_tuple->data;
 	u32 op_no = 0;
@@ -451,7 +451,7 @@ parse_update_fields_operations(struct box_txn *txn, struct update_fields_cmd *cm
 			old_field_len = load_varint32(&old_tuple_data);
 			field_exist = true;
 		} else {
-			struct update_fields_op *op = &cmd->op[op_no];
+			struct update_op *op = &cmd->op[op_no];
 			/* all old tuple fields are processed, but command might be
 			   contain append field operations */
 			/* for new field must be at least one operation */
@@ -466,7 +466,7 @@ parse_update_fields_operations(struct box_txn *txn, struct update_fields_cmd *cm
 		int op_begin = op_no;
 		int op_usefull = op_no;
 		while (op_no < cmd->op_cnt) {
-			struct update_fields_op *op = &cmd->op[op_no];
+			struct update_op *op = &cmd->op[op_no];
 
 			/* since the operations are ordered with respect to
 			   field number operation field number must be grater
@@ -482,7 +482,7 @@ parse_update_fields_operations(struct box_txn *txn, struct update_fields_cmd *cm
 			op->skip = false;
 			switch (op->opcode) {
 			case UPDATE_SET_FIELD:
-				parse_update_fields_operations_set(op, field_len);
+				parse_update_operations_set(op, field_len);
 				op_usefull = op_no;
 				field_exist = true;
 				break;
@@ -490,10 +490,10 @@ parse_update_fields_operations(struct box_txn *txn, struct update_fields_cmd *cm
 			case UPDATE_BIT_AND_INT:
 			case UPDATE_BIT_XOR_INT:
 			case UPDATE_BIT_OR_INT:
-				parse_update_fields_operations_arith(op, field_len);
+				parse_update_operations_arith(op, field_len);
 				break;
 			case UPDATE_SPLICE_STR:
-				parse_update_fields_operations_splice(op, field_len);
+				parse_update_operations_splice(op, field_len);
 				break;
 			case UPDATE_DELETE_FIELD:
 				op->new_field_len = 0;
@@ -528,9 +528,8 @@ parse_update_fields_operations(struct box_txn *txn, struct update_fields_cmd *cm
 }
 
 void
-do_update_fields_op_set(struct update_fields_op *op,
-			   struct tbuf **field_ptr,
-			   bool *inplace)
+do_update_op_set(struct update_op *op, struct tbuf **field_ptr,
+		 bool *inplace)
 {
 	struct tbuf *field = *field_ptr;
 
@@ -554,9 +553,8 @@ do_update_fields_op_set(struct update_fields_op *op,
 }
 
 void
-do_update_fields_op_arith(struct update_fields_op *op,
-			     struct tbuf **field_ptr,
-			     bool *inplace __attribute__((unused)))
+do_update_op_arith(struct update_op *op, struct tbuf **field_ptr,
+		   bool *inplace __attribute__((unused)))
 {
 	struct tbuf *field = *field_ptr;
 	void *field_value = field->data + varint32_sizeof(field->len);
@@ -577,9 +575,8 @@ do_update_fields_op_arith(struct update_fields_op *op,
 }
 
 void
-do_update_fields_op_splice(struct update_fields_op *op,
-			      struct tbuf **field_ptr,
-			      bool *inplace)
+do_update_op_splice(struct update_op *op, struct tbuf **field_ptr,
+		    bool *inplace)
 {
 	struct tbuf *field = *field_ptr;
 	/* splice do always in the separate buffer */
@@ -679,7 +676,7 @@ do_update_fields(struct box_txn *txn, struct update_fields_cmd *cmd)
 
 		/* apply operations to field */
 		while (op_no < cmd->op_cnt) {
-			struct update_fields_op *op = &cmd->op[op_no];
+			struct update_op *op = &cmd->op[op_no];
 
 			/* since the operations are ordered with respect to field number
 			  operation field number must be grater or equal current field number */
@@ -693,17 +690,17 @@ do_update_fields(struct box_txn *txn, struct update_fields_cmd *cmd)
 
 			switch (op->opcode) {
 			case UPDATE_SET_FIELD:
-				do_update_fields_op_set(op, &field, &inplace);
+				do_update_op_set(op, &field, &inplace);
 				field_exist = true;
 				break;
 			case UPDATE_ADD_INT:
 			case UPDATE_BIT_AND_INT:
 			case UPDATE_BIT_XOR_INT:
 			case UPDATE_BIT_OR_INT:
-				do_update_fields_op_arith(op, &field, &inplace);
+				do_update_op_arith(op, &field, &inplace);
 				break;
 			case UPDATE_SPLICE_STR:
-				do_update_fields_op_splice(op, &field, &inplace);
+				do_update_op_splice(op, &field, &inplace);
 				break;
 			case UPDATE_DELETE_FIELD:
 				field_exist = false;
@@ -751,7 +748,7 @@ prepare_update_fields(struct box_txn *txn, struct tbuf *data)
 	lock_tuple(txn, txn->old_tuple);
 
 	/* prepare apply update fields */
-	parse_update_fields_operations(txn, cmd);
+	parse_update_operations(txn, cmd);
 
 	/* allocate new tuple */
 	txn->tuple = tuple_alloc(cmd->new_tuple_len);
