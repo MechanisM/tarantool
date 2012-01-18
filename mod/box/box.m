@@ -336,7 +336,7 @@ parse_update_fields_command(struct tbuf *data)
 
 	/* number of operations */
 	cmd->op_cnt = read_u32(data);
-	if (cmd->op_cnt > BOX_UPDATE_FIELDS_OP_CNT_MAX)
+	if (cmd->op_cnt > BOX_UPDATE_OP_CNT_MAX)
 		tnt_raise(IllegalParams, :"too many operations for update");
 	if (cmd->op_cnt == 0)
 		tnt_raise(IllegalParams, :"no operations for update");

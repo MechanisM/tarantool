@@ -40,7 +40,7 @@ enum
 	BOX_INDEX_MAX = 10,
 	BOX_SPACE_MAX = 256,
 	/** update fields operations counter maximal value */
-	BOX_UPDATE_FIELDS_OP_CNT_MAX = 128,
+	BOX_UPDATE_OP_CNT_MAX = 128,
 };
 
 struct space {
@@ -122,7 +122,7 @@ ENUM(messages, MESSAGES);
 /*
  * update fields operations codes
  */
-#define UPDATE_FIELDS_OPCODES(_)		\
+#define UPDATE_OP_CODES(_)			\
 	_(UPDATE_SET_FIELD, 0)			\
 	_(UPDATE_ADD_INT, 1)			\
 	_(UPDATE_BIT_AND_INT, 2)		\
@@ -131,7 +131,7 @@ ENUM(messages, MESSAGES);
 	_(UPDATE_SPLICE_STR, 5)			\
 	_(UPDATE_DELETE_FIELD, 6)		\
 
-ENUM(update_fields_opcodes, UPDATE_FIELDS_OPCODES);
+ENUM(update_op_codes, UPDATE_OP_CODES);
 
 
 extern iproto_callback rw_callback;
