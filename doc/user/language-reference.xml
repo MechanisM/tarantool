@@ -4,6 +4,7 @@
 ]>
 <chapter xmlns="http://docbook.org/ns/docbook" version="5.0"
          xmlns:xlink="http://www.w3.org/1999/xlink"
+         xmlns:xi="http://www.w3.org/2001/XInclude"
          xml:id="language-reference">
 
 <title>Language reference</title>
@@ -20,7 +21,7 @@
   <itemizedlist>
     <listitem><para>
       Read/write data port, to handle INSERTs, UPDATEs,
-      DELETEs and SELECTs. This port speaks the native
+      DELETEs, SELECTs and CALLs. This port speaks the native
       Tarantool protocol, and provides full access to the server.
       </para>
       <para>
@@ -29,7 +30,7 @@
       configuration option.
     </para></listitem>
     <listitem><para>
-      Read only port, which only accepts SELECTs, port number
+      Read only port, which only accepts SELECTs, default  port number
       <literal>33014</literal>, as defined in
       <olink targetptr="secondary_port"/> configuration option.
     </para></listitem>
@@ -46,7 +47,7 @@
         is not started.
       </para></listitem>
     <listitem><para>Memcached port. Optional, read-write data port
-      that speaks Memcached protocol. This port is off by default.
+      that speaks Memcached text protocol. This port is off by default.
     </para></listitem>
   </itemizedlist>
   In absence of authentication, this approach allows system
@@ -55,8 +56,8 @@
   the separation, and <command>tarantool</command> command line
   client automatically selects the correct port for you
   with help of a simple regular expression. SELECTs, UPDATEs,
-  INSERTs and DELETEs are sent to the primary port, whereas SHOW,
-  RELOAD, SAVE and others -- to the administrative port.
+  INSERTs, DELETEs and CALLs are sent to the primary port.
+  SHOW, RELOAD, SAVE and other statements are sent to the administrative port.
 </para>
 
 <section>
@@ -64,15 +65,15 @@
 
   <para>Tarantool protocol was designed with focus on asynchronous
     I/O and easy integration with proxies. Each client
-    request starts with a simple binary header, containing three
+    request starts with a 12-byte binary header, containing three
     fields: request type, length, and a numeric id.
   </para>
   <para>
-    Four basic request types are supported: INSERT, UPDATE, DELETE
-    and SELECT. The mandatory length, present in the header,
-    allows to simplify client or proxy I/O.
+    Five basic request types are supported: INSERT, UPDATE,
+    DELETE, SELECT and CALL. The mandatory length, present in the
+    header, allows simplifying client or proxy I/O.
     The server response to a request always carries in its header
-    the same command type and request id.
+    the same request type and id.
     The id makes it possible to always match request to a
     response, even if the latter arrived out of order.
   </para>
@@ -102,7 +103,7 @@
       or there is no readily available connector for the
       programming language in use, any existing client driver for
       Memcached will make do as a Tarantool connector.
-      To enable Memcached protocol, turn on
+      To enable text Memcached protocol, turn on
       <olink targetptr="memcached_port"/> in the option file.
       Since Memcached has no notion of spaces or secondary
       indexes, this port only makes it possible to access one
@@ -110,86 +111,13 @@
       targetptr="memcached_space"/>) via its primary key.
       Unless tuple expiration is enabled with <olink
       targetptr="memcached_expire"/>, TTL part of the message is
-      stored but ignored.
+      stored but ignored. Note, that we do not support the binary
+      protocol of Memcached. If top performance
+      is a must, Tarantool's own binary protocol should be
+      used.
   </para>
   </section>
 </section>
-
-<section>
-  <title>Writing stored procedures in Lua</title>
-  <para>
-    Lua is a light-weight, multi-paradigm embeddable language.
-    Tarantool/Box supports allows user to dynamically define,
-    alter, drop using the administrative console.
-    The procedures can be invoked Lua both from the administrative
-    console and using a binary protocol, for example:
-<programlisting>
-tarantool> lua function f1() return 'hello' end
----
-...
-tarantool> call f1()
-Found 1 tuple:
-['hello']
-</programlisting>
-  </para>
-  <para>
-    There is a single global Lua interpreter state, which is
-    shared across all connections. Each connection, however, is
-    running in its own Lua <quote>thread</quote> -- a mechanism, akin to
-    Tarantool <quote>fibers</quote>.
-    Anything, prefixed with "lua " on the administrative console
-    is sent directly to the interpreter. In the binary protocol,
-    however, it is only possible to invoke Lua functions, but not
-    define or modify them.
-    A special command code designates invocation of a stored
-    program in the binary protocol. The tuple, sent as argument
-    of the command, is passed into the stored procedure, each
-    field of the tuple converted to a string parameter of the
-    procedure. As long as currently Tarantool tuples are
-    type-agnostic, Lua strings is chosen as the transport means
-    between the server and the interpreter.
-  </para>
-  <para>
-    Everything value, returned from a stored function by means of
-    <quote>return</quote> clause, is converted to Tarantool/Box tuple
-    and sent back to the client in binary form.
-  </para>
-  <para>
-    It's possible not only to invoke trivial Lua code, but call
-    into Tarantool/Box storage functionality, using <quote>box</quote>
-    Lua library.
-    The main means of communication between Lua and Tarantool
-    is <quote>box.process()</quote> function, which allows
-    to send any kind of request to the server in the binary form.
-    Function <quote>box.process()</quote> is a server-side outlet
-    for Tarantool binary protocol. Any tuple returned by the
-    server is converted to a Lua object of tupe <quote>box.tuple</quote>
-    and appended to the return list of <quote>box.process()</quote>.
-  </para>
-  <para>
-    A few wrappers are defined to simplify the most common
-    tasks:
-    <itemizedlist>
-        <listitem><para><quote>box.select(space, key, ...)</quote>
-        to retrieve tuples. </para></listitem>
-        <listitem><para><quote>box.replace(space, ...)</quote>
-        to insert and replace tuples. The tuple is constructed
-        from all the remaining arguments passed into the function.</para></listitem>
-        <listitem><para><quote>box.update(space, key, tuple)</quote> and <quote>box.delete(space, key)</quote>for updates and deletes respectively.</para></listitem>
-    </itemizedlist>
-    The Lua source code of these wrappers, as well as a more
-    extensive documentation can be found in <filename>mod/box/box.lua</filename> file in the source tree.
-  </para>
-  <section>
-  <title>Replication of stored procedures</title>
-  <para>
-    The CALL statement itself does not enter Tarantool write ahead
-    log. Instead, the actual updates and deletes, performed by
-    the procedure, generate their own log events.
-  </para>
-  </section>
-</section>
-
 
 <section>
   <title>Administrative console</title>
@@ -236,8 +164,26 @@ Found 1 tuple:
         updates, there are going to be page splits, and therefore
         you need to have some extra free memory to run this
         command. 15%-30% of <olink targetptr="slab_alloc_arena"/>
-        is, on average, sufficient.
-      </para></listitem>
+        is, on average, sufficient. This statement waits until a
+        snapshot is taken and returns operation result. For
+        example:
+<programlisting>localhost> show info
+---
+info:
+  version: "1.4.4"
+  lsn: 843301
+...
+localhost> save snapshot
+---
+ok
+...
+localhost> save snapshot
+---
+fail: can't save snapshot, errno 17 (File exists)
+...
+</programlisting>
+      </para>
+      </listitem>
     </varlistentry>
 
 
@@ -271,10 +217,10 @@ Found 1 tuple:
       </term>
       <listitem><para>
 <programlisting>
-tarantool> show info
+localhost> show info
 ---
 info:
-  version: "1.4.0-30-ge500b95"
+  version: "1.4.4"
   uptime: 441524
   pid: 16180
   wal_writer_pid: 16182
@@ -282,6 +228,7 @@ info:
   recovery_lag: 0.000
   recovery_last_update: 1306964594.980
   status: primary
+  config: /usr/local/etc/tarantool.cfg
 </programlisting>
       </para>
       <para>
@@ -295,11 +242,12 @@ info:
       <para>
         <emphasis role="strong">recovery_last_update</emphasis> is
         the wall clock time of the last change recorded in the
-        write ahead log.
+        write ahead log. To convert it to human-readable time,
+        you can use <command>date -d@<replaceable>1306964594.980</replaceable></command>.
       </para>
       <para>
         <emphasis role="strong">status</emphasis> is
-        either "primary" or "hot_standby/&lt;hostname&gt;".
+        either "primary" or "replica/&lt;hostname&gt;".
       </para>
 
       </listitem>
@@ -311,7 +259,7 @@ info:
       </term>
       <listitem><para>
 <programlisting>
-tarantool> show stat
+localhost> show stat
 ---
 statistics:
   INSERT:        { rps:  139  , total:  48207694    }
@@ -379,9 +327,25 @@ statistics:
       </para></listitem>
     </varlistentry>
 
+    <varlistentry>
+      <term xml:id="lua-command" xreflabel="LUA ...">
+        <emphasis role="tntadmin">lua ...</emphasis>
+      </term>
+      <listitem><para>
+        Execute a chunk of Lua code. This can be used to define,
+        invoke, debug and drop <olink
+        targetptr="stored-programs">stored programs</olink>,
+        inspect server environment, perform automated
+        administrative tasks.
+      </para></listitem>
+    </varlistentry>
+
   </variablelist>
 
 </section>
+
+<xi:include href="stored-programs.xml" />
+
 </chapter>
 
 <!--

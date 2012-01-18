@@ -18,6 +18,7 @@ CMakeFiles
 CMakeCache.txt
 cmake_install.cmake
 mod/box/tarantool_box
+client/tarantool/tarantool
 include/config.h
 CPackConfig.cmake
 CPackSourceConfig.cmake
@@ -26,6 +27,7 @@ install_manifest.txt
 tarantool-*.tar.gz
 doc/tnt.ent
 doc/user/tarantool_user_guide.html
+doc/developer/tarantool_developer_guide.html
 third_party/luajit/src/luajit
 third_party/luajit/lib/vmdef.lua
 third_party/luajit/src/buildvm
@@ -35,3 +37,5 @@ third_party/luajit/src/lj_folddef.h
 third_party/luajit/src/lj_libdef.h
 third_party/luajit/src/lj_recdef.h
 third_party/luajit/src/lj_vm.s
+test/connector_c/tt
+*.reject

@@ -501,7 +501,7 @@ tarantool_box: primary@sessions pri:33013 sec:33014 adm:33015</programlisting>
         </row>
 
         <row>
-          <entry>rows_per_wal</entry>
+          <entry xml:id="rows_per_wal" xreflabel="rows_per_wal">rows_per_wal</entry>
           <entry>integer</entry>
           <entry>500000</entry>
           <entry>no</entry>
@@ -530,7 +530,7 @@ tarantool_box: primary@sessions pri:33013 sec:33014 adm:33015</programlisting>
         </row>
 
         <row>
-          <entry>wal_writer_inbox_size</entry>
+          <entry xml:id="wal_writer_inbox_size" xreflabel="wal_writer_inbox_size">wal_writer_inbox_size</entry>
           <entry>integer</entry>
           <entry>128</entry>
           <entry>no</entry>
@@ -547,7 +547,7 @@ tarantool_box: primary@sessions pri:33013 sec:33014 adm:33015</programlisting>
 
         <row>
         <entry>wal_fsync_delay</entry>
-        <entry>integer</entry>
+        <entry>float</entry>
         <entry>0</entry>
         <entry>no</entry>
         <entry>no</entry>
@@ -778,8 +778,8 @@ tarantool_box: primary@sessions pri:33013 sec:33014 adm:33015</programlisting>
 
         <row>
           <entry>memcached_port</entry>
-          <entry>boolean</entry>
-          <entry>false</entry>
+          <entry>integer</entry>
+          <entry>none</entry>
           <entry>no</entry>
           <entry>no</entry>
           <entry>
@@ -810,7 +810,7 @@ tarantool_box: primary@sessions pri:33013 sec:33014 adm:33015</programlisting>
           <entry>
             <anchor xml:id="memcached_space"
             xreflabel="memcached_space"/>
-          Namespace id to store memcached data in. The
+          Space id to store memcached data in. The
           format of tuple is [key, metadata, value], with a HASH
           index based on the key. Since the space format
           is defined by Memcached data model, it must not be
@@ -853,7 +853,7 @@ tarantool_box: primary@sessions pri:33013 sec:33014 adm:33015</programlisting>
 
         <row>
           <entry>memcached_expire_full_sweep</entry>
-          <entry>integer</entry>
+          <entry>float</entry>
           <entry>3600</entry>
           <entry>no</entry>
           <entry><emphasis role="strong">yes</emphasis></entry>

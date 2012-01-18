@@ -1,21 +1,16 @@
-<!DOCTYPE chapter [
+<!DOCTYPE section [
 <!ENTITY % tnt SYSTEM "../tnt.ent">
 %tnt;
 ]>
-<chapter xmlns="http://docbook.org/ns/docbook" version="5.0"
+<section xmlns="http://docbook.org/ns/docbook" version="5.0"
          xmlns:xlink="http://www.w3.org/1999/xlink">
 <title>Dynamic data model</title>
-<blockquote><para>
-  This chapter describes how Tarantool stores 
-  values and what operations with data it supports.
-</para></blockquote>
-
 <para>
   Tarantool data is organized in <emphasis>tuples</emphasis>. Tuple
-  cardinality is varying: a tuple can contain any number
+  length is varying: a tuple can contain any number
   of fields. A field can be either numeric &mdash;
   32- or 64- bit unsigned integer, or binary
-  string &mdash; a sequence of 8-bit octets.  The first field of a
+  string &mdash; a sequence of octets.  The first field of a
   tuple is always assumed to be
   the identifying (unique) key. The remaining fields make up a 
   value, associated with the key.
@@ -25,9 +20,9 @@
   Apart from the primary key, it is possible to define secondary
   <emphasis>indexes</emphasis> on other tuple fields. A secondary index does
   not have to be unique, and can cover several fields.
-  If a space has a secondary index, tuple cardinality must be
-  at least equal to the ordinal number of the field
-  participating in the index.
+  If a space has a secondary index, the total number of fields in
+  a tuple must be at least equal to the ordinal number of the
+  field participating in the index.
 </para>
 <para>
   Currently, entire server <emphasis>schema</emphasis> must be
@@ -41,7 +36,7 @@
 </para>
 <para>
   Schema objects, such as spaces and indexes, are referred to
-  by a numeric id. For example, to insert a tuple, is is necessary
+  by a numeric id. For example, to insert a tuple, it is necessary
   to provide id of the destination space; to select
   a tuple, one must provide the identifying key, space id and
   index id of the index used for lookup.
@@ -55,26 +50,26 @@
   supports a small subset of SQL, and we'll use it to demonstrate
   supported data manipulation commands:
   <programlisting>
-  tarantool> insert into t0 values (1)
+  localhost> insert into t0 values (1)
   Insert OK, 1 row affected
-  tarantool> select * from t0 where k0=1
+  localhost> select * from t0 where k0=1
   Found 1 tuple:
   [1]
-  tarantool> insert into t0 values ('hello')
+  localhost> insert into t0 values ('hello')
   An error occurred: ER_ILLEGAL_PARAMS, 'Illegal parameters'
-  tarantool> insert into t0 values (1, 'hello')
-  Insert OK, 1 row affected
-  tarantool> select * from t0 where k0=1 
+  localhost> replace into t0 values (1, 'hello')
+  Replace OK, 1 row affected
+  localhost> select * from t0 where k0=1 
   Found 1 tuple:
   [1, 'hello']
-  tarantool> update t0 set k1='world' where k0=1
+  localhost> update t0 set k1='world' where k0=1
   Update OK, 1 row affected
-  tarantool> select * from t0 where k0=1
+  localhost> select * from t0 where k0=1
   Found 1 tuple:
   [1, 'world']
-  tarantool> delete from t0 where k0=1
+  localhost> delete from t0 where k0=1
   Delete OK, 1 row affected
-  tarantool> select * from t0 where k0=1
+  localhost> select * from t0 where k0=1
   No match</programlisting>
 
   <itemizedlist>
@@ -93,9 +88,9 @@
        is, therefore, mandatory.
     </para></listitem>
     <listitem><para>
-       INSERT turns into REPLACE when a tuple with given
-       primary key already exists. Such replace can insert
-       a tuple of different cardinality.
+       REPLACE replaces data when a
+       tuple with given primary key already exists. Such replace
+       can insert a tuple of different cardinality.
     </para></listitem>
   </itemizedlist>
 </para>
@@ -115,7 +110,7 @@
   xlink:href="https://github.com/mailru/tarantool/blob/master/doc/box-protocol.txt" xlink:title="A complete BNF of Tarantool client/server protocol">doc/protocol.txt</filename>.
 </para>
 
-</chapter>
+</section>
 <!--
 vim: tw=66 syntax=docbk
 vim: spell spelllang=en_us

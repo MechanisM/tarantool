@@ -64,6 +64,15 @@ tarantool_box: --daemonize: unknown option
 tarantool_box --background
 tarantool_box: the daemon is already running
 
+#
+# Check that --background  doesn't work if there is no logger
+# This is a test case for
+# https:tarantool/+bug/750658
+# "--background neither closes nor redirects stdin/stdout/stderr"
+#
+tarantool_box --config=tarantool_bug750658.cfg --background
+tarantool_box: --background requires 'logger' configuration option to be set
+
 tarantool_box --version
 Tarantool/Box 1.minor.patch-<rev>-<commit>
 
@@ -84,4 +93,11 @@ tarantool_box: space 0 successfully configured
 tarantool_box: creating `snapshots/00000000000000000001.snap.inprogress'
 tarantool_box: saving snapshot `snapshots/00000000000000000001.snap'
 tarantool_box: done
+
+#
+# A test case for Bug#897162, cat command should
+# not require a configuration file.
+
+tarantool_box --config=nonexists.cfg --cat=nonexists.xlog
+tarantool_box: access("nonexists.xlog"): No such file or directory
 

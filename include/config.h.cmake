@@ -50,6 +50,8 @@
  * Defined if this is a big-endian system.
  */
 #cmakedefine HAVE_BYTE_ORDER_BIG_ENDIAN 1
+
+#define SYSCONF_DIR "@CMAKE_SYSCONF_DIR@"
 /*
  * vim: syntax=c
  */

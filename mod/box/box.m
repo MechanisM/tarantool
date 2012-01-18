@@ -147,7 +147,7 @@ STRS(messages, MESSAGES);
 
 const int BOX_REF_THRESHOLD = 8196;
 
-struct space *space;
+struct space *space = NULL;
 
 struct box_snap_row {
 	u32 space;
@@ -191,6 +191,42 @@ tuple_txn_ref(struct box_txn *txn, struct box_tuple *tuple)
 	tuple_ref(tuple, +1);
 }
 
+void
+validate_indexes(struct box_txn *txn)
+{
+	if (space[txn->n].index[1] == nil)
+		return;
+
+	/* There is more than one index. */
+	foreach_index(txn->n, index) {
+		/* XXX: skip the first index here! */
+		for (u32 f = 0; f < index->key_def.part_count; ++f) {
+			if (index->key_def.parts[f].fieldno >= txn->tuple->cardinality)
+				tnt_raise(IllegalParams, :"tuple must have all indexed fields");
+
+			if (index->key_def.parts[f].type == STRING)
+				continue;
+
+			void *field = tuple_field(txn->tuple, index->key_def.parts[f].fieldno);
+			u32 len = load_varint32(&field);
+
+			if (index->key_def.parts[f].type == NUM && len != sizeof(u32))
+				tnt_raise(IllegalParams, :"field must be NUM");
+
+			if (index->key_def.parts[f].type == NUM64 && len != sizeof(u64))
+				tnt_raise(IllegalParams, :"field must be NUM64");
+		}
+		if (index->type == TREE && index->key_def.is_unique == false)
+			/* Don't check non unique indexes */
+			continue;
+
+		struct box_tuple *tuple = [index findByTuple: txn->tuple];
+
+		if (tuple != NULL && tuple != txn->old_tuple)
+			tnt_raise(ClientError, :ER_INDEX_VIOLATION);
+	}
+}
+
 static void __attribute__((noinline))
 prepare_replace(struct box_txn *txn, size_t cardinality, struct tbuf *data)
 {
@@ -198,15 +234,15 @@ prepare_replace(struct box_txn *txn, size_t cardinality, struct tbuf *data)
 	if (cardinality == 0)
 		tnt_raise(IllegalParams, :"tuple cardinality is 0");
 
-	if (data->len == 0 || data->len != valid_tuple(data, cardinality))
+	if (data->size == 0 || data->size != valid_tuple(data, cardinality))
 		tnt_raise(IllegalParams, :"incorrect tuple length");
 
-	txn->tuple = tuple_alloc(data->len);
+	txn->tuple = tuple_alloc(data->size);
 	tuple_txn_ref(txn, txn->tuple);
 	txn->tuple->cardinality = cardinality;
-	memcpy(txn->tuple->data, data->data, data->len);
+	memcpy(txn->tuple->data, data->data, data->size);
 
-	txn->old_tuple = txn->index->find_by_tuple(txn->index, txn->tuple);
+	txn->old_tuple = [txn->index findByTuple: txn->tuple];
 
 	if (txn->old_tuple != NULL)
 		tuple_txn_ref(txn, txn->old_tuple);
@@ -222,8 +258,8 @@ prepare_replace(struct box_txn *txn, size_t cardinality, struct tbuf *data)
 	if (txn->old_tuple != NULL) {
 #ifndef NDEBUG
 		void *ka, *kb;
-		ka = tuple_field(txn->tuple, txn->index->key_field->fieldno);
-		kb = tuple_field(txn->old_tuple, txn->index->key_field->fieldno);
+		ka = tuple_field(txn->tuple, txn->index->key_def.parts[0].fieldno);
+		kb = tuple_field(txn->old_tuple, txn->index->key_def.parts[0].fieldno);
 		int kal, kab;
 		kal = load_varint32(&ka);
 		kab = load_varint32(&kb);
@@ -249,7 +285,7 @@ prepare_replace(struct box_txn *txn, size_t cardinality, struct tbuf *data)
 		 * txn_commit().
 		 */
 		foreach_index(txn->n, index)
-			index->replace(index, NULL, txn->tuple);
+			[index replace: NULL :txn->tuple];
 	}
 
 	txn->out->dup_u32(1); /* Affected tuples */
@@ -263,7 +299,7 @@ commit_replace(struct box_txn *txn)
 {
 	if (txn->old_tuple != NULL) {
 		foreach_index(txn->n, index)
-			index->replace(index, txn->old_tuple, txn->tuple);
+			[index replace: txn->old_tuple :txn->tuple];
 
 		tuple_ref(txn->old_tuple, -1);
 	}
@@ -281,7 +317,7 @@ rollback_replace(struct box_txn *txn)
 
 	if (txn->tuple && txn->tuple->flags & GHOST) {
 		foreach_index(txn->n, index)
-			index->remove(index, txn->tuple);
+			[index remove: txn->tuple];
 	}
 }
 
@@ -331,7 +367,7 @@ parse_update_fields_command(struct tbuf *data)
 		op->arg.raw.length = load_varint32(&op->arg.raw.value);
 	}
 	/* check last data length, it must be fully read */
-	if (data->len != 0)
+	if (data->size != 0)
 		tnt_raise(IllegalParams, :"can't unpack request");
 
 	return cmd;
@@ -388,7 +424,7 @@ static void
 parse_update_operations_splice(struct update_op *op, u32 field_len)
 {
 	struct tbuf operands = {
-		.len = op->arg.raw.length,
+		.capacity = op->arg.raw.length,
 		.size = op->arg.raw.length,
 		.data = op->arg.raw.value,
 		.pool = NULL
@@ -425,7 +461,7 @@ parse_update_operations_splice(struct update_op *op, u32 field_len)
 	op->arg.splice.list = list_field;
 
 	/* check last operands data length, it must be fully read */
-	if (operands.len != 0)
+	if (operands.size != 0)
 		tnt_raise(ClientError, :ER_INVALID_CMD_FORMAT,
 			  "operation splice: bad operands");
 
@@ -552,7 +588,7 @@ do_update_op_set(struct update_op *op, struct tbuf **field_ptr,
 	/* copy new field */
 	void *field_value = save_varint32(field->data, op->arg.set.length);
 	memcpy(field_value, op->arg.set.value, op->arg.set.length);
-	field->len = new_field_len;
+	field->size = new_field_len;
 }
 
 void
@@ -560,7 +596,7 @@ do_update_op_arith(struct update_op *op, struct tbuf **field_ptr,
 		   bool *inplace __attribute__((unused)))
 {
 	struct tbuf *field = *field_ptr;
-	void *field_value = field->data + varint32_sizeof(field->len);
+	void *field_value = field->data + varint32_sizeof(field->size);
 	switch (op->opcode) {
 	case UPDATE_ADD_INT:
 		*(i32 *)field_value += op->arg.arith.i32_val;
@@ -591,11 +627,11 @@ do_update_op_splice(struct update_op *op, struct tbuf **field_ptr,
 	/* save field length */
 	tbuf_ensure(new_field, varint32_sizeof(op->new_field_len));
 	save_varint32(new_field->data, op->new_field_len);
-	new_field->len += varint32_sizeof(op->new_field_len);
+	new_field->size += varint32_sizeof(op->new_field_len);
 
 	/* save field value */
-	u32 field_length = field->len - varint32_sizeof(field->len);
-	void *field_value = field->data + varint32_sizeof(field->len);
+	u32 field_length = field->size - varint32_sizeof(field->size);
+	void *field_value = field->data + varint32_sizeof(field->size);
 
 	tbuf_append(new_field, field_value, op->arg.splice.offset);
 	tbuf_append(new_field, op->arg.splice.list, op->arg.splice.list_length);
@@ -611,14 +647,14 @@ do_update_fields(struct box_txn *txn, struct update_fields_cmd *cmd)
 {
 	/* old tuple */
 	struct tbuf old_tuple = {
-		.len = txn->old_tuple->bsize,
+		.capacity = txn->old_tuple->bsize,
 		.size = txn->old_tuple->bsize,
 		.data = txn->old_tuple->data,
 		.pool = NULL
 	};
 	/* new tuple */
 	struct tbuf tuple = {
-		.len = txn->tuple->bsize,
+		.capacity = txn->tuple->bsize,
 		.size = txn->tuple->bsize,
 		.data = txn->tuple->data,
 		.pool = NULL
@@ -648,7 +684,7 @@ do_update_fields(struct box_txn *txn, struct update_fields_cmd *cmd)
 		}
 
 		u32 old_field_len = varint32_sizeof(old_value_len) + old_value_len;
-		if (old_field_len <= tuple.len) {
+		if (old_field_len <= tuple.size) {
 			/* field can be put to new tuple */
 
 			/* move field to new tuple */
@@ -657,8 +693,8 @@ do_update_fields(struct box_txn *txn, struct update_fields_cmd *cmd)
 			/* save field data */
 			memcpy(field_value, old_value, old_value_len);
 
-			inplace_field.len = old_field_len;
-			inplace_field.size = tuple.len;
+			inplace_field.size = old_field_len;
+			inplace_field.capacity = tuple.size;
 			inplace_field.data = tuple.data;
 
 			field = &inplace_field;
@@ -673,7 +709,7 @@ do_update_fields(struct box_txn *txn, struct update_fields_cmd *cmd)
 			void *field_value = save_varint32(field->data, old_value_len);
 			/* save field data */
 			memcpy(field_value, old_value, old_value_len);
-			field->len = old_field_len;
+			field->size = old_field_len;
 			inplace = false;
 		}
 
@@ -716,12 +752,12 @@ do_update_fields(struct box_txn *txn, struct update_fields_cmd *cmd)
 
 		if (field_exist) {
 			if (!inplace) {
-				assert(tuple.len >= field->len);
-				memcpy(tuple.data, field->data, field->len);
+				assert(tuple.size >= field->size);
+				memcpy(tuple.data, field->data, field->size);
 			}
 
-			tuple.data += field->len;
-			tuple.len -= field->len;
+			tuple.data += field->size;
+			tuple.size -= field->size;
 			txn->tuple->cardinality += 1;
 		}
 		field_no += 1;
@@ -739,7 +775,7 @@ prepare_update_fields(struct box_txn *txn, struct tbuf *data)
 	struct update_fields_cmd *cmd = parse_update_fields_command(data);
 
 	/* try to find updating tuple */
-	txn->old_tuple = txn->index->find(txn->index, cmd->key);
+	txn->old_tuple = [txn->index find :cmd->key];
 	if (txn->old_tuple == NULL) {
 		/* tuple with same key not exist */
 		/* this command useless, it not be logged in the WAL */
@@ -779,56 +815,36 @@ process_select(struct box_txn *txn, u32 limit, u32 offset, struct tbuf *data)
 	txn->out->add_u32(found);
 	*found = 0;
 
-	if (txn->index->type == TREE) {
-		for (u32 i = 0; i < count; i++) {
+	for (u32 i = 0; i < count; i++) {
 
-			/* End the loop if reached the limit. */
-			if (limit == *found)
-				return;
+		Index *index = txn->index;
+		/* End the loop if reached the limit. */
+		if (limit == *found)
+			return;
 
-			u32 key_len = read_u32(data);
-			void *key = NULL;
+		u32 key_cardinality = read_u32(data);
+		void *key = NULL;
 
-			if (key_len != 0)
-				key = read_field(data);
+		if (key_cardinality != 0)
+			key = read_field(data);
 
-			/* advance remaining fields of a key */
-			for (int i = 1; i < key_len; i++)
-				read_field(data);
+		/*
+		 * For TREE indexes, we allow partially specified
+		 * keys. HASH indexes are always unique and can
+		 * not have multiple parts.
+		 */
+		if (index->type == HASH && key_cardinality != 1)
+			tnt_raise(IllegalParams, :"key must be single valued");
 
-			struct tree_index_member *pattern =
-				alloc_search_pattern(txn->index, key_len, key);
-			txn->index->iterator_init(txn->index, pattern);
+		/* advance remaining fields of a key */
+		for (int i = 1; i < key_cardinality; i++)
+			read_field(data);
 
-			while ((tuple = txn->index->iterator_next(txn->index, pattern)) != NULL) {
-				if (tuple->flags & GHOST)
-					continue;
+		struct iterator *it = index->position;
+		[index initIterator: it :key :key_cardinality];
 
-				if (offset > 0) {
-					offset--;
-					continue;
-				}
-
-				txn->out->add_tuple(tuple);
-
-				if (limit == ++(*found))
-					break;
-			}
-		}
-	} else {
-		for (u32 i = 0; i < count; i++) {
-
-			/* End the loop if reached the limit. */
-			if (limit == *found)
-				return;
-
-			u32 key_len = read_u32(data);
-			if (key_len != 1)
-				tnt_raise(IllegalParams, :"key must be single valued");
-
-			void *key = read_field(data);
-			tuple = txn->index->find(txn->index, key);
-			if (tuple == NULL || tuple->flags & GHOST)
+		while ((tuple = it->next_equal(it)) != NULL) {
+			if (tuple->flags & GHOST)
 				continue;
 
 			if (offset > 0) {
@@ -837,11 +853,12 @@ process_select(struct box_txn *txn, u32 limit, u32 offset, struct tbuf *data)
 			}
 
 			txn->out->add_tuple(tuple);
-			(*found)++;
+
+			if (limit == ++(*found))
+				break;
 		}
 	}
-
-	if (data->len != 0)
+	if (data->size != 0)
 		tnt_raise(IllegalParams, :"can't unpack request");
 }
 
@@ -850,7 +867,7 @@ prepare_delete(struct box_txn *txn, void *key)
 {
 	u32 tuples_affected = 0;
 
-	txn->old_tuple = txn->index->find(txn->index, key);
+	txn->old_tuple = [txn->index find: key];
 
 	if (txn->old_tuple == NULL)
 		/*
@@ -879,7 +896,7 @@ commit_delete(struct box_txn *txn)
 		return;
 
 	foreach_index(txn->n, index)
-		index->remove(index, txn->old_tuple);
+		[index remove: txn->old_tuple];
 	tuple_ref(txn->old_tuple, -1);
 }
 
@@ -944,15 +961,15 @@ void txn_assign_n(struct box_txn *txn, struct tbuf *data)
 {
 	txn->n = read_u32(data);
 
-	if (txn->n < 0 || txn->n >= BOX_NAMESPACE_MAX)
-		tnt_raise(ClientError, :ER_NO_SUCH_NAMESPACE, txn->n);
+	if (txn->n < 0 || txn->n >= BOX_SPACE_MAX)
+		tnt_raise(ClientError, :ER_NO_SUCH_SPACE, txn->n);
 
 	txn->space = &space[txn->n];
 
 	if (!txn->space->enabled)
-		tnt_raise(ClientError, :ER_NAMESPACE_DISABLED, txn->n);
+		tnt_raise(ClientError, :ER_SPACE_DISABLED, txn->n);
 
-	txn->index = txn->space->index;
+	txn->index = txn->space->index[0];
 }
 
 /** Remember op code/request in the txn. */
@@ -960,14 +977,18 @@ static void
 txn_set_op(struct box_txn *txn, u16 op, struct tbuf *data)
 {
 	txn->op = op;
-	txn->req = (struct tbuf){ .data = data->data, .len = data->len };
+	txn->req = (struct tbuf) {
+		.data = data->data,
+		.size = data->size,
+		.capacity = data->size,
+		.pool = NULL };
 }
 
 static void
 txn_cleanup(struct box_txn *txn)
 {
 	struct box_tuple **tuple = txn->ref_tuples->data;
-	int i = txn->ref_tuples->len / sizeof(struct box_txn *);
+	int i = txn->ref_tuples->size / sizeof(struct box_txn *);
 
 	while (i-- > 0) {
 		say_debug("tuple_txn_unref(%p)", *tuple);
@@ -983,7 +1004,6 @@ txn_commit(struct box_txn *txn)
 {
 	assert(txn == in_txn());
 	assert(txn->op);
-	fiber->mod_data.txn = 0;
 
 	if (!op_is_select(txn->op)) {
 		say_debug("box_commit(op:%s)", messages_strs[txn->op]);
@@ -994,7 +1014,7 @@ txn_commit(struct box_txn *txn)
 			fiber_peer_name(fiber); /* fill the cookie */
 			struct tbuf *t = tbuf_alloc(fiber->gc_pool);
 			tbuf_append(t, &txn->op, sizeof(txn->op));
-			tbuf_append(t, txn->req.data, txn->req.len);
+			tbuf_append(t, txn->req.data, txn->req.size);
 
 			i64 lsn = next_lsn(recovery_state, 0);
 			bool res = !wal_write(recovery_state, wal_tag,
@@ -1011,6 +1031,12 @@ txn_commit(struct box_txn *txn)
 		else
 			commit_replace(txn);
 	}
+	/*
+	 * If anything above throws, we must be able to
+	 * roll back. Thus clear mod_data.txn only when
+	 * we know for sure the commit has succeeded.
+	 */
+	fiber->mod_data.txn = 0;
 
 	if (txn->flags & BOX_GC_TXN)
 		fiber_register_cleanup((fiber_cleanup_handler)txn_cleanup, txn);
@@ -1068,7 +1094,7 @@ box_dispatch(struct box_txn *txn, struct tbuf *data)
 			tnt_raise(IllegalParams, :"key must be single valued");
 
 		key = read_field(data);
-		if (data->len != 0)
+		if (data->size != 0)
 			tnt_raise(IllegalParams, :"can't unpack request");
 
 		prepare_delete(txn, key);
@@ -1081,12 +1107,9 @@ box_dispatch(struct box_txn *txn, struct tbuf *data)
 		u32 offset = read_u32(data);
 		u32 limit = read_u32(data);
 
-		if (i >= BOX_INDEX_MAX ||
-		    space[txn->n].index[i].key_cardinality == 0) {
-
+		if (i >= BOX_INDEX_MAX || space[txn->n].index[i] == nil)
 			tnt_raise(LoggedError, :ER_NO_SUCH_INDEX, i, txn->n);
-		}
-		txn->index = &space[txn->n].index[i];
+		txn->index = space[txn->n].index[i];
 
 		process_select(txn, limit, offset, data);
 		break;
@@ -1115,7 +1138,7 @@ box_xlog_sprint(struct tbuf *buf, const struct tbuf *t)
 
 	struct tbuf *b = palloc(fiber->gc_pool, sizeof(*b));
 	b->data = row->data;
-	b->len = row->len;
+	b->size = row->len;
 	u16 tag, op;
 	u64 cookie;
 	struct sockaddr_in *peer = (void *)&cookie;
@@ -1128,7 +1151,7 @@ box_xlog_sprint(struct tbuf *buf, const struct tbuf *t)
 
 	tbuf_printf(buf, "lsn:%" PRIi64 " ", row->lsn);
 
-	say_debug("b->len:%" PRIu32, b->len);
+	say_debug("b->len:%" PRIu32, b->size);
 
 	tag = read_u16(b);
 	cookie = read_u64(b);
@@ -1143,7 +1166,7 @@ box_xlog_sprint(struct tbuf *buf, const struct tbuf *t)
 	case REPLACE:
 		flags = read_u32(b);
 		cardinality = read_u32(b);
-		if (b->len != valid_tuple(b, cardinality))
+		if (b->size != valid_tuple(b, cardinality))
 			abort();
 		tuple_print(buf, cardinality, b->data);
 		break;
@@ -1153,7 +1176,7 @@ box_xlog_sprint(struct tbuf *buf, const struct tbuf *t)
 	case DELETE_1_3:
 		key_len = read_u32(b);
 		key = read_field(b);
-		if (b->len != 0)
+		if (b->size != 0)
 			abort();
 		tuple_print(buf, key_len, key);
 		break;
@@ -1210,7 +1233,7 @@ snap_print(struct recovery_state *r __attribute__((unused)), struct tbuf *t)
 
 	struct tbuf *b = palloc(fiber->gc_pool, sizeof(*b));
 	b->data = raw_row->data;
-	b->len = raw_row->len;
+	b->size = raw_row->len;
 
 	(void)read_u16(b); /* drop tag */
 	(void)read_u64(b); /* drop cookie */
@@ -1218,7 +1241,7 @@ snap_print(struct recovery_state *r __attribute__((unused)), struct tbuf *t)
 	row = box_snap_row(b);
 
 	tuple_print(out, row->tuple_size, row->data);
-	printf("n:%i %*s\n", row->space, (int)out->len, (char *)out->data);
+	printf("n:%i %*s\n", row->space, (int) out->size, (char *)out->data);
 	return 0;
 }
 
@@ -1228,7 +1251,7 @@ xlog_print(struct recovery_state *r __attribute__((unused)), struct tbuf *t)
 	struct tbuf *out = tbuf_alloc(t->pool);
 	int res = box_xlog_sprint(out, t);
 	if (res >= 0)
-		printf("%*s\n", (int)out->len, (char *)out->data);
+		printf("%*s\n", (int)out->size, (char *)out->data);
 	return res;
 }
 
@@ -1236,31 +1259,78 @@ void
 space_free(void)
 {
 	int i;
-	for (i = 0 ; i < BOX_NAMESPACE_MAX ; i++) {
+	for (i = 0 ; i < BOX_SPACE_MAX ; i++) {
 		if (!space[i].enabled)
 			continue;
 		int j;
 		for (j = 0 ; j < BOX_INDEX_MAX ; j++) {
-			struct index *index = &space[i].index[j];
-			if (index->key_cardinality == 0)
+			Index *index = space[i].index[j];
+			if (index == nil)
 				break;
-			index_free(index);
-			sfree(index->key_field);
-			sfree(index->field_cmp_order);
+			[index free];
 		}
 	}
 }
 
-void
-space_init(void)
+static void
+key_init(struct key_def *def, struct tarantool_cfg_space_index *cfg_index)
 {
-	space = palloc(eter_pool, sizeof(struct space) * BOX_NAMESPACE_MAX);
-	for (int i = 0; i < BOX_NAMESPACE_MAX; i++) {
-		space[i].enabled = false;
-		for (int j = 0; j < BOX_INDEX_MAX; j++) {
-			space[i].index[j].key_cardinality = 0;
+	def->max_fieldno = 0;
+	def->part_count = 0;
+
+	/* Calculate key cardinality and maximal field number. */
+	for (int k = 0; cfg_index->key_field[k] != NULL; ++k) {
+		typeof(cfg_index->key_field[k]) cfg_key = cfg_index->key_field[k];
+
+		if (cfg_key->fieldno == -1) {
+			/* last filled key reached */
+			break;
 		}
+
+		def->max_fieldno = MAX(def->max_fieldno, cfg_key->fieldno);
+		def->part_count++;
 	}
+
+	/* init def array */
+	def->parts = salloc(sizeof(struct key_part) * def->part_count);
+	if (def->parts == NULL) {
+		panic("can't allocate def parts array for index");
+	}
+
+	/* init compare order array */
+	def->max_fieldno++;
+	def->cmp_order = salloc(def->max_fieldno * sizeof(u32));
+	if (def->cmp_order == NULL) {
+		panic("can't allocate def cmp_order array for index");
+	}
+	memset(def->cmp_order, -1, def->max_fieldno * sizeof(u32));
+
+	/* fill fields and compare order */
+	for (int k = 0; cfg_index->key_field[k] != NULL; ++k) {
+		typeof(cfg_index->key_field[k]) cfg_key = cfg_index->key_field[k];
+
+		if (cfg_key->fieldno == -1) {
+			/* last filled key reached */
+			break;
+		}
+
+		/* fill keys */
+		def->parts[k].fieldno = cfg_key->fieldno;
+		def->parts[k].type = STR2ENUM(field_data_type, cfg_key->type);
+		/* fill compare order */
+		def->cmp_order[cfg_key->fieldno] = k;
+	}
+	def->is_unique = cfg_index->unique;
+}
+
+static void
+space_config(void)
+{
+	/* exit if no spaces are configured */
+	if (cfg.space == NULL) {
+		return;
+	}
+
 	/* fill box spaces */
 	for (int i = 0; cfg.space[i] != NULL; ++i) {
 		tarantool_cfg_space *cfg_space = cfg.space[i];
@@ -1276,66 +1346,32 @@ space_init(void)
 		/* fill space indexes */
 		for (int j = 0; cfg_space->index[j] != NULL; ++j) {
 			typeof(cfg_space->index[j]) cfg_index = cfg_space->index[j];
-			struct index *index = &space[i].index[j];
-			u32 max_key_fieldno = 0;
-
-			/* clean-up index struct */
-			memset(index, 0, sizeof(*index));
-
-			/* calculate key cardinality and maximal field number */
-			for (int k = 0; cfg_index->key_field[k] != NULL; ++k) {
-				typeof(cfg_index->key_field[k]) cfg_key = cfg_index->key_field[k];
-
-				if (cfg_key->fieldno == -1) {
-					/* last filled key reached */
-					break;
-				}
-
-				max_key_fieldno = MAX(max_key_fieldno, cfg_key->fieldno);
-				++index->key_cardinality;
-			}
-
-			/* init key array */
-			index->key_field = salloc(sizeof(index->key_field[0]) * index->key_cardinality);
-			if (index->key_field == NULL) {
-				panic("can't allocate key_field for index");
-			}
-
-			/* init compare order array */
-			index->field_cmp_order_cnt = max_key_fieldno + 1;
-			index->field_cmp_order = salloc(index->field_cmp_order_cnt * sizeof(u32));
-			if (index->field_cmp_order == NULL) {
-				panic("can't allocate field_cmp_order for index");
-			}
-			memset(index->field_cmp_order, -1, index->field_cmp_order_cnt * sizeof(u32));
-
-			/* fill fields and compare order */
-			for (int k = 0; cfg_index->key_field[k] != NULL; ++k) {
-				typeof(cfg_index->key_field[k]) cfg_key = cfg_index->key_field[k];
-
-				if (cfg_key->fieldno == -1) {
-					/* last filled key reached */
-					break;
-				}
-
-				/* fill keys */
-				index->key_field[k].fieldno = cfg_key->fieldno;
-				index->key_field[k].type = STR2ENUM(field_data_type, cfg_key->type);
-				/* fill compare order */
-				index->field_cmp_order[cfg_key->fieldno] = k;
-			}
-
-			index->search_pattern = palloc(eter_pool, SIZEOF_TREE_INDEX_MEMBER(index));
-			index->unique = cfg_index->unique;
-			index->type = STR2ENUM(index_type, cfg_index->type);
-			index_init(index, &space[i], cfg_space->estimated_rows);
+			struct key_def key_def;
+			key_init(&key_def, cfg_index);
+			enum index_type type = STR2ENUM(index_type, cfg_index->type);
+			Index *index = [Index alloc: type :&key_def];
+			[index init: type :&key_def:space + i :j];
+			space[i].index[j] = index;
 		}
 
 		space[i].enabled = true;
 		space[i].n = i;
-
 		say_info("space %i successfully configured", i);
 	}
+}
+
+void
+space_init(void)
+{
+	/* Allocate and initialize space memory. */
+	space = palloc(eter_pool, sizeof(struct space) * BOX_SPACE_MAX);
+	memset(space, 0, sizeof(struct space) * BOX_SPACE_MAX);
+
+
+	/* configure regular spaces */
+	space_config();
+
+	/* configure memcached space */
 	memcached_space_init();
 }
 
@@ -1489,48 +1525,14 @@ box_leave_local_standby_mode(void *data __attribute__((unused)))
 	box_enter_master_or_replica_mode(&cfg);
 }
 
-i32
-mod_check_config(struct tarantool_cfg *conf)
+static i32
+check_spaces(struct tarantool_cfg *conf)
 {
-	/* replication & hot standby modes can not work together */
-	if (conf->replication_source != NULL && conf->local_hot_standby > 0) {
-		out_warning(0, "replication and local hot standby modes "
-			       "can't be enabled simultaneously");
-		return -1;
+	/* exit if no spaces are configured */
+	if (conf->space == NULL) {
+		return 0;
 	}
 
-	/* check replication mode */
-	if (conf->replication_source != NULL) {
-		/* check replication port */
-		char ip_addr[32];
-		int port;
-
-		if (sscanf(conf->replication_source, "%31[^:]:%i",
-			   ip_addr, &port) != 2) {
-			out_warning(0, "replication source IP address is not recognized");
-			return -1;
-		}
-		if (port <= 0 || port >= USHRT_MAX) {
-			out_warning(0, "invalid replication source port value: %i", port);
-			return -1;
-		}
-	}
-
-	/* check primary port */
-	if (conf->primary_port != 0 &&
-	    (conf->primary_port <= 0 || conf->primary_port >= USHRT_MAX)) {
-		out_warning(0, "invalid primary port value: %i", conf->primary_port);
-		return -1;
-	}
-
-	/* check secondary port */
-	if (conf->secondary_port != 0 &&
-	    (conf->secondary_port <= 0 || conf->secondary_port >= USHRT_MAX)) {
-		out_warning(0, "invalid secondary port value: %i", conf->primary_port);
-		return -1;
-	}
-
-	/* check configured spaces */
 	for (size_t i = 0; conf->space[i] != NULL; ++i) {
 		typeof(conf->space[i]) space = conf->space[i];
 
@@ -1545,7 +1547,7 @@ mod_check_config(struct tarantool_cfg *conf)
 		}
 
 		/* check space bound */
-		if (i >= BOX_NAMESPACE_MAX) {
+		if (i >= BOX_SPACE_MAX) {
 			/* maximum space is reached */
 			out_warning(0, "(space = %zu) "
 				    "too many spaces (%i maximum)", i, space);
@@ -1553,7 +1555,7 @@ mod_check_config(struct tarantool_cfg *conf)
 		}
 
 		if (conf->memcached_port && i == conf->memcached_space) {
-			out_warning(0, "Namespace %i is already used as "
+			out_warning(0, "Space %i is already used as "
 				    "memcached_space.", i);
 			return -1;
 		}
@@ -1628,10 +1630,16 @@ mod_check_config(struct tarantool_cfg *conf)
 				return -1;
 			}
 
-			/* first space index must has hash type */
-			if (j == 0 && index_type != HASH) {
-				out_warning(0, "(space = %zu) space first index must has HASH type", i);
-				return -1;
+			/* first space index must be unique and cardinality == 1 */
+			if (j == 0) {
+				if (index->unique == false) {
+					out_warning(0, "(space = %zu) space first index must be unique", i);
+					return -1;
+				}
+				if (index_cardinality != 1) {
+					out_warning(0, "(space = %zu) space first index must be single keyed", i);
+					return -1;
+				}
 			}
 
 			switch (index_type) {
@@ -1658,6 +1666,62 @@ mod_check_config(struct tarantool_cfg *conf)
 			}
 		}
 	}
+
+	return 0;
+}
+
+i32
+mod_check_config(struct tarantool_cfg *conf)
+{
+	/* replication & hot standby modes can not work together */
+	if (conf->replication_source != NULL && conf->local_hot_standby > 0) {
+		out_warning(0, "replication and local hot standby modes "
+			       "can't be enabled simultaneously");
+		return -1;
+	}
+
+	/* check replication mode */
+	if (conf->replication_source != NULL) {
+		/* check replication port */
+		char ip_addr[32];
+		int port;
+
+		if (sscanf(conf->replication_source, "%31[^:]:%i",
+			   ip_addr, &port) != 2) {
+			out_warning(0, "replication source IP address is not recognized");
+			return -1;
+		}
+		if (port <= 0 || port >= USHRT_MAX) {
+			out_warning(0, "invalid replication source port value: %i", port);
+			return -1;
+		}
+	}
+
+	/* check primary port */
+	if (conf->primary_port != 0 &&
+	    (conf->primary_port <= 0 || conf->primary_port >= USHRT_MAX)) {
+		out_warning(0, "invalid primary port value: %i", conf->primary_port);
+		return -1;
+	}
+
+	/* check secondary port */
+	if (conf->secondary_port != 0 &&
+	    (conf->secondary_port <= 0 || conf->secondary_port >= USHRT_MAX)) {
+		out_warning(0, "invalid secondary port value: %i", conf->primary_port);
+		return -1;
+	}
+
+	/* check if at least one space is defined */
+	if (conf->space == NULL && conf->memcached_port == 0) {
+		out_warning(0, "at least one space or memcached port must be defined");
+		return -1;
+	}
+
+	/* check configured spaces */
+	if (check_spaces(conf) != 0) {
+		return -1;
+	}
+
 	/* check memcached configuration */
 	if (memcached_check_config(conf) != 0) {
 		return -1;
@@ -1773,33 +1837,41 @@ mod_cat(const char *filename)
 	return read_log(filename, xlog_print, snap_print, NULL);
 }
 
-void
-mod_snapshot(struct log_io_iter *i)
+static void
+snapshot_write_tuple(struct log_io_iter *i, unsigned n, struct box_tuple *tuple)
 {
 	struct tbuf *row;
 	struct box_snap_row header;
-	struct box_tuple *tuple;
-	khiter_t k;
 
-	for (uint32_t n = 0; n < BOX_NAMESPACE_MAX; ++n) {
+	if (tuple->flags & GHOST)	// do not save fictive rows
+		return;
+
+	header.space = n;
+	header.tuple_size = tuple->cardinality;
+	header.data_size = tuple->bsize;
+
+	row = tbuf_alloc(fiber->gc_pool);
+	tbuf_append(row, &header, sizeof(header));
+	tbuf_append(row, tuple->data, tuple->bsize);
+
+	snapshot_write_row(i, snap_tag, default_cookie, row);
+}
+
+void
+mod_snapshot(struct log_io_iter *i)
+{
+	struct box_tuple *tuple;
+
+	for (uint32_t n = 0; n < BOX_SPACE_MAX; ++n) {
 		if (!space[n].enabled)
 			continue;
 
-		assoc_foreach(space[n].index[0].idx.int_hash, k) {
-			tuple = kh_value(space[n].index[0].idx.int_hash, k);
+		Index *pk = space[n].index[0];
 
-			if (tuple->flags & GHOST)	// do not save fictive rows
-				continue;
-
-			header.space = n;
-			header.tuple_size = tuple->cardinality;
-			header.data_size = tuple->bsize;
-
-			row = tbuf_alloc(fiber->gc_pool);
-			tbuf_append(row, &header, sizeof(header));
-			tbuf_append(row, tuple->data, tuple->bsize);
-
-			snapshot_write_row(i, snap_tag, default_cookie, row);
+		struct iterator *it = pk->position;
+		[pk initIterator: it];
+		while ((tuple = it->next(it))) {
+			snapshot_write_tuple(i, n, tuple);
 		}
 	}
 }
@@ -1807,7 +1879,6 @@ mod_snapshot(struct log_io_iter *i)
 void
 mod_info(struct tbuf *out)
 {
-	tbuf_printf(out, "info:" CRLF);
 	tbuf_printf(out, "  version: \"%s\"" CRLF, tarantool_version());
 	tbuf_printf(out, "  uptime: %i" CRLF, (int)tarantool_uptime());
 	tbuf_printf(out, "  pid: %i" CRLF, getpid());

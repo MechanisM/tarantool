@@ -91,8 +91,19 @@ static void
 fail(struct tbuf *out, struct tbuf *err)
 {
 	start(out);
-	tbuf_printf(out, "fail:%.*s" CRLF, err->len, (char *)err->data);
+	tbuf_printf(out, "fail:%.*s" CRLF, err->size, (char *)err->data);
 	end(out);
+}
+
+static void
+tarantool_info(struct tbuf *out)
+{
+	tbuf_printf(out, "info:" CRLF);
+	mod_info(out);
+	const char *path = cfg_filename_fullpath;
+	if (path == NULL)
+		path = cfg_filename;
+	tbuf_printf(out, "  config: \"%s\"" CRLF, path);
 }
 
 static int
@@ -104,7 +115,7 @@ admin_dispatch(lua_State *L)
 	char *p, *pe;
 	char *strstart, *strend;
 
-	while ((pe = memchr(fiber->rbuf->data, '\n', fiber->rbuf->len)) == NULL) {
+	while ((pe = memchr(fiber->rbuf->data, '\n', fiber->rbuf->size)) == NULL) {
 		if (fiber_bread(fiber->rbuf, 1) <= 0)
 			return 0;
 	}
@@ -186,7 +197,7 @@ admin_dispatch(lua_State *L)
 		commands = (help			%help						|
 			    exit			%{return 0;}					|
 			    lua  " "+ string		%lua						|
-			    show " "+ info		%{start(out); mod_info(out); end(out);}		|
+			    show " "+ info		%{start(out); tarantool_info(out); end(out);}		|
 			    show " "+ fiber		%{start(out); fiber_info(out); end(out);}	|
 			    show " "+ configuration 	%show_configuration				|
 			    show " "+ slab		%{start(out); slab_stat(out); end(out);}	|
@@ -210,7 +221,7 @@ admin_dispatch(lua_State *L)
 		end(out);
 	}
 
-	return fiber_write(out->data, out->len);
+	return fiber_write(out->data, out->size);
 }
 
 static void
@@ -218,6 +229,8 @@ admin_handler(void *data __attribute__((unused)))
 {
 	lua_State *L = lua_newthread(tarantool_L);
 	int coro_ref = luaL_ref(tarantool_L, LUA_REGISTRYINDEX);
+	/** Allow to interrupt/kill administrative connections. */
+	fiber_setcancelstate(true);
 	@try {
 		for (;;) {
 			if (admin_dispatch(L) <= 0)

@@ -1,4 +1,4 @@
-; Mail.RU IPROTO protocol, Tarantool/Box subset.
+Tarantool/Box IPROTO protocol.
 ;
 ; The latest version of this document can be found in
 ; tarantool source tree, doc/box-protocol.txt
@@ -13,7 +13,7 @@
 ;
 ; int8 - a single 8-bit byte (i.e. an octet)
 ;
-; int32 - a 32-bit integer in big-endian format (Intel x86)
+; int32 - a 32-bit integer in little-endian format (Intel x86)
 ;
 ; int32_varint - a 1 to 5 byte representation of an integer
 ;
@@ -21,8 +21,8 @@
 ; integer (BER stands for Basic Encoding Rules, but in reality it
 ; has little to do with ASN.1 standard). 
 ; See http://en.wikipedia.org/wiki/LEB128
-; for encoding description, or core/pickle.c for implementation
-; in tarantool.
+; for encoding description, or core/pickle.m for implementation
+; in Tarantool.
 
 ; All requests and responses utilize the same basic structure:
 
@@ -105,7 +105,7 @@
 
 ; <select_request_body> (required <header> <type> is 17):
 ;
-; Specify which namespace to query, which index in the namespace
+; Specify which space to query, which index in the space
 ; to use, offset in the resulting tuple set (set to 0 for no offset),
 ; a limit (set to 4294967295 for no limit), and one or several
 ; keys to use in lookup. When more than one key is given, they
@@ -115,18 +115,18 @@
 ; must be non-zero.
 ;
 
-<select_request_body> ::= <namespace_no><index_no>
+<select_request_body> ::= <space_no><index_no>
                           <offset><limit><count><tuple>+
 
-; Namespace number is a non-negative integer, starting from 0.
-; All namespaces are defined in the server configuration file,
+; Space number is a non-negative integer, starting from 0.
+; All spaces are defined in the server configuration file,
 ; and then referred to by numeric id.
 
-<namespace_no> ::= <int32>
+<space_no> ::= <int32>
 
 ; Tarantool supports HASH and TREE indexes. Indexes are
-; enumerated similarly to namespaces, starting from 0.
-; Each namespace has at least index #0, which defines
+; enumerated similarly to spaces, starting from 0.
+; Each space has at least index #0, which defines
 ; the primary key.
 
 <index_no> ::= <int32>
@@ -193,6 +193,7 @@
 <int32_varint> ::= <int8>+
 ;
 ; SELECT may return zero, one or several tuples.
+; CALL response is identical to one for SELECT.
 ; <select_response_body> starts with the number of found
 ; tuples:
 ;
@@ -214,15 +215,16 @@
 
 <fq_tuple> ::= <size><tuple>
 
+; length of the variable part of the tuple (all tuple fields)
 <size> ::= <int32>
 
 ;
 ; It is not possible to insert more than one tuple at a time.
 ; Thus <insert_request_body> (<header> <type> = 13) simply
-; holds one tuple, and which namespace to put it into.
+; holds one tuple, and which space to put it into.
 ;
 
-<insert_request_body> ::= <namespace_no><flags><tuple>
+<insert_request_body> ::= <space_no><flags><tuple>
 
 ; The only defined flag BOX_RETURN_TUPLE (0x01) indicates
 ; that it is required to return the inserted tuple back:
@@ -237,7 +239,7 @@
 <insert_response_body> ::= <count> | <count><fq_tuple>
 
 ; <update> request, <type> = 19 is similar to <insert>:
-; - <namespace_no>: same as in <select> or <insert>
+; - <space_no>: same as in <select> or <insert>
 ; - <flags>, <tuple>: same as in <insert>
 ; Index number for tuple lookup does not need to be provided,
 ; since only primary key updates are allowed.
@@ -246,7 +248,7 @@
 ; - <count> specifies possibly zero operation count
 ;
 
-<update_request_body> ::= <namespace_no><flags><tuple><count><operation>+
+<update_request_body> ::= <space_no><flags><tuple><count><operation>+
 
 ;
 ; Operations are optional and exist solely to allow
@@ -274,7 +276,7 @@
 ; on strings:
 ; 5 - implementation of Perl 'splice' command
 
-<op_code> ::= <int8> # 0 | 1 | 2 | 3
+<op_code> ::= <int8> # 0 | 1 | 2 | 3 | 4 | 5
 
 ;
 ; It's an error to specify an argument of a type that
@@ -310,7 +312,7 @@
 ; primary key.
 ;
 
-<delete_request_body> ::= <namespace_no><flags><tuple>
+<delete_request_body> ::= <space_no><flags><tuple>
 
 ;
 ; <delete> returns the number of deleted tuples.
@@ -322,7 +324,7 @@
 <delete_response_body> ::= <count> | <count><fq_tuple>
 
 ;
-; CALL request body contains <namespace_no>, <flags>, <proc_name>
+; CALL request body contains <flags>, <proc_name>
 ; the number of procedure args, and the arguments themselves,
 ; which are passed into the procedure as Lua strings.
 ;
@@ -338,9 +340,9 @@
 ;
 ; In case of an error, <call_response_body> always contains
 ; <return_code>. If it's not 0, it is followed by an
-; error message. Otherwise, the rest of the response can
-; be arbitrary.
-<call_response_body> ::= <...>
+; error message. Otherwise, the response, just like in case of
+; SELECT, is a sequence of <fq_tuple>s.
+<call_response_body> ::= <select_response_body>
 
 ;
 ; The server response, in addition to response header and body,
@@ -351,7 +353,7 @@
 
 <return_code> ::= <int32>
 
-; Currently, the completion status is complementary:
+; The completion status is complementary:
 ; it can be deduced from the error code. There are only
 ; 3 completion status codes in use:
 ; 0  - success; The only possible error code with this status is
@@ -406,8 +408,8 @@
 ;  0x00002702 -- ER_WAL_IO
 ;                WAL I/O error
 ;
-; Convenience that define hexadecimal constants for <int32>
-; return codes (completion status + code) can be found in
-; include/iproto.h.
+; Convenience macros which define hexadecimal constants for
+; <int32> return codes (completion status + code) can be found
+; in include/iproto.h.
 ;
 ; vim: syntax=bnf

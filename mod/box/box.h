@@ -34,12 +34,11 @@
 
 struct tarantool_cfg;
 struct box_tuple;
-struct index;
 
 enum
 {
 	BOX_INDEX_MAX = 10,
-	BOX_NAMESPACE_MAX = 256,
+	BOX_SPACE_MAX = 256,
 	/** update fields operations counter maximal value */
 	BOX_UPDATE_FIELDS_OP_CNT_MAX = 128,
 };
@@ -48,7 +47,7 @@ struct space {
 	int n;
 	bool enabled;
 	int cardinality;
-	struct index index[BOX_INDEX_MAX];
+	Index *index[BOX_INDEX_MAX];
 };
 
 extern struct space *space;
@@ -68,7 +67,7 @@ struct box_txn {
 	struct lua_State *L;
 	struct box_out *out;
 	struct space *space;
-	struct index *index;
+	Index *index;
 	int n;
 
 	struct tbuf *ref_tuples;

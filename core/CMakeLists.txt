@@ -55,12 +55,13 @@ set (recompiled_core_sources
      ${CMAKE_SOURCE_DIR}/core/tarantool.m
      ${CMAKE_SOURCE_DIR}/core/tarantool_lua.m
      ${CMAKE_SOURCE_DIR}/core/say.m
+     ${CMAKE_SOURCE_DIR}/core/assoc.m
      ${CMAKE_SOURCE_DIR}/core/admin.m
      ${CMAKE_SOURCE_DIR}/core/replication.m
      ${CMAKE_SOURCE_DIR}/core/fiber.m PARENT_SCOPE)
 
 set (common_sources tbuf.m palloc.m util.m
-    salloc.m pickle.m coro.m stat.m log_io.m
+    salloc.m pickle.m coro.m stat.m log_io.m cpu_feature.m
     log_io_remote.m iproto.m exception.m errcode.c latch.m)
 
 if (ENABLE_TRACE)
@@ -71,14 +72,17 @@ add_library(core STATIC ${common_sources})
 add_dependencies(core generate_headers luajit)
 set_target_properties(core PROPERTIES COMPILE_FLAGS "${core_cflags}")
 
-set (common_libraries cfg core ev coro gopt misc objc luajit dl)
+set (common_libraries cfg core ev coro gopt misc objc luajit)
+if (TARGET_OS_LINUX)
+  set (common_libraries ${common_libraries} dl)
+endif()
 
 if (ENABLE_GCOV)
   set (common_libraries ${common_libraries} gcov)
 endif()
 
 if (ENABLE_BACKTRACE AND HAVE_BFD)
-  set (common_libraries ${common_libraries} bfd dl)
+  set (common_libraries ${common_libraries} bfd)
   if (ENABLE_STATIC)
      include (FindZLIB)
      set (common_libraries ${common_libraries} ${ZLIB_LIBRARIES} iberty)

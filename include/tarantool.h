@@ -31,6 +31,7 @@
 #include <log_io.h>
 
 struct lua_State;
+struct luaL_Reg;
 
 extern struct recovery_state *recovery_state;
 void mod_init(void);
@@ -51,6 +52,10 @@ void mod_info(struct tbuf *out);
  */
 struct lua_State *mod_lua_init(struct lua_State *L);
 
+void
+tarantool_lua_register_type(struct lua_State *L, const char *type_name,
+			    const struct luaL_Reg *methods);
+
 /**
  * Create an instance of Lua interpreter and load it with
  * Tarantool modules.  Creates a Lua state, imports global
@@ -61,6 +66,7 @@ struct lua_State *mod_lua_init(struct lua_State *L);
  * @return  L on success, 0 if out of memory
  */
 struct lua_State *tarantool_lua_init();
+void tarantool_lua_close(struct lua_State *L);
 
 /*
  * Single global lua_State shared by core and modules.
@@ -77,13 +83,13 @@ void tarantool_lua_load_cfg(struct lua_State *L,
 
 extern struct tarantool_cfg cfg;
 extern const char *cfg_filename;
+extern char *cfg_filename_fullpath;
 extern bool init_storage, booting;
 extern char *binary_filename;
 extern char *custom_proc_title;
 i32 reload_cfg(struct tbuf *out);
 int snapshot(void * /* ev */, int /* events */);
 const char *tarantool_version(void);
-void tarantool_info(struct tbuf *out);
 double tarantool_uptime(void);
 void tarantool_free(void);
 

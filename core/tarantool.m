@@ -60,7 +60,8 @@
 
 static pid_t master_pid;
 #define DEFAULT_CFG_FILENAME "tarantool.cfg"
-const char *cfg_filename = DEFAULT_CFG_FILENAME;
+#define DEFAULT_CFG SYSCONF_DIR "/" DEFAULT_CFG_FILENAME
+const char *cfg_filename = NULL;
 char *cfg_filename_fullpath = NULL;
 char *binary_filename;
 char *custom_proc_title;
@@ -72,8 +73,6 @@ struct recovery_state *recovery_state;
 static ev_signal *sigs = NULL;
 
 bool init_storage, booting = true;
-
-extern int daemonize(int nochdir, int noclose);
 
 static i32
 load_cfg(struct tarantool_cfg *conf, i32 check_rdonly)
@@ -123,7 +122,7 @@ reload_cfg(struct tbuf *out)
 
 	if (tnt_latch_trylock(latch) == -1) {
 		out_warning(0, "Could not reload configuration: it is being reloaded right now");
-		tbuf_append(out, cfg_out->data, cfg_out->len);
+		tbuf_append(out, cfg_out->data, cfg_out->size);
 
 		return -1;
 	}
@@ -171,8 +170,8 @@ reload_cfg(struct tbuf *out)
 		destroy_tarantool_cfg(&aux_cfg);
 		destroy_tarantool_cfg(&new_cfg);
 
-		if (cfg_out->len != 0)
-			tbuf_append(out, cfg_out->data, cfg_out->len);
+		if (cfg_out->size != 0)
+			tbuf_append(out, cfg_out->data, cfg_out->size);
 
 		tnt_latch_unlock(latch);
 	}
@@ -288,6 +287,9 @@ create_pid(void)
 	char buf[16] = { 0 };
 	pid_t pid;
 
+	if (cfg.pid_file == NULL)
+		return;
+
 	f = fopen(cfg.pid_file, "a+");
 	if (f == NULL)
 		panic_syserror("can't open pid file");
@@ -315,6 +317,36 @@ create_pid(void)
 	fclose(f);
 }
 
+/** Run in the background. */
+static void
+background()
+{
+	switch (fork()) {
+	case -1:
+		goto error;
+	case 0:                                     /* child */
+		break;
+	default:                                    /* parent */
+		exit(EXIT_SUCCESS);
+	}
+
+	if (setsid() == -1)
+		goto error;
+
+	/*
+	 * Prints to stdout on failure, so got to be done before
+	 * we close it.
+	 */
+	create_pid();
+
+	close(STDIN_FILENO);
+	close(STDOUT_FILENO);
+	close(STDERR_FILENO);
+	return;
+error:
+        exit(EXIT_FAILURE);
+}
+
 void
 tarantool_free(void)
 {
@@ -339,6 +371,11 @@ tarantool_free(void)
 #ifdef ENABLE_GCOV
 	__gcov_flush();
 #endif
+#ifdef HAVE_BFD
+	symbols_free();
+#endif
+	if (tarantool_L)
+		tarantool_lua_close(tarantool_L);
 }
 
 static void
@@ -377,9 +414,10 @@ main(int argc, char **argv)
 	stat_init();
 	palloc_init();
 
-#ifdef RESOLVE_SYMBOLS
-	load_symbols(argv[0]);
+#ifdef HAVE_BFD
+	symbols_load(argv[0]);
 #endif
+
 	argv = init_set_proc_title(argc, argv);
 	main_argc = argc;
 	main_argv = argv;
@@ -428,8 +466,26 @@ main(int argc, char **argv)
 		return 0;
 	}
 
-	/* If config filename given in command line it will override the default */
+	if (gopt_arg(opt, 'C', &cat_filename)) {
+		initialize_minimal();
+		if (access(cat_filename, R_OK) == -1) {
+			panic("access(\"%s\"): %s", cat_filename, strerror(errno));
+			exit(EX_OSFILE);
+		}
+		return mod_cat(cat_filename);
+	}
+
 	gopt_arg(opt, 'c', &cfg_filename);
+	/* if config is not specified trying ./tarantool.cfg then /etc/tarantool.cfg */
+	if (cfg_filename == NULL) {
+		if (access(DEFAULT_CFG_FILENAME, F_OK) == 0)
+			cfg_filename = DEFAULT_CFG_FILENAME;
+		else if (access(DEFAULT_CFG, F_OK) == 0)
+			cfg_filename = DEFAULT_CFG;
+		else
+			panic("can't load config " "%s or %s", DEFAULT_CFG_FILENAME, DEFAULT_CFG);
+	}
+
 	cfg.log_level += gopt(opt, 'v');
 
 	if (argc != 1) {
@@ -454,7 +510,7 @@ main(int argc, char **argv)
 	if (gopt(opt, 'k')) {
 		if (fill_default_tarantool_cfg(&cfg) != 0 || load_cfg(&cfg, 0) != 0) {
 			say_error("check_config FAILED"
-				  "%.*s", cfg_out->len, (char *)cfg_out->data);
+				  "%.*s", cfg_out->size, (char *)cfg_out->data);
 
 			return 1;
 		}
@@ -464,7 +520,7 @@ main(int argc, char **argv)
 
 	if (fill_default_tarantool_cfg(&cfg) != 0 || load_cfg(&cfg, 0) != 0)
 		panic("can't load config:"
-		      "%.*s", cfg_out->len, (char *)cfg_out->data);
+		      "%.*s", cfg_out->size, (char *)cfg_out->data);
 
 	if (gopt_arg(opt, 'g', &cfg_paramname)) {
 		tarantool_cfg_iterator_t *i;
@@ -523,15 +579,6 @@ main(int argc, char **argv)
 #endif
 	}
 
-	if (gopt_arg(opt, 'C', &cat_filename)) {
-		initialize_minimal();
-		if (access(cat_filename, R_OK) == -1) {
-			say_syserror("access(\"%s\")", cat_filename);
-			exit(EX_OSFILE);
-		}
-		return mod_cat(cat_filename);
-	}
-
 	if (gopt(opt, 'I')) {
 		init_storage = true;
 		initialize_minimal();
@@ -542,11 +589,18 @@ main(int argc, char **argv)
 		exit(EXIT_SUCCESS);
 	}
 
-	if (gopt(opt, 'B'))
-		daemonize(1, 1);
-
-	if (cfg.pid_file != NULL)
+	if (gopt(opt, 'B')) {
+		if (cfg.logger == NULL) {
+			say_crit("--background requires 'logger' configuration option to be set");
+			exit(EXIT_FAILURE);
+		}
+		background();
+	}
+	else {
 		create_pid();
+	}
+
+	say_logger_init(cfg.logger_nonblock);
 
 	/* init process title */
 	if (cfg.custom_proc_title == NULL) {
@@ -557,7 +611,6 @@ main(int argc, char **argv)
 		strcat(custom_proc_title, cfg.custom_proc_title);
 	}
 
-	say_logger_init(cfg.logger_nonblock);
 	booting = false;
 
 	/* main core cleanup routine */
@@ -572,6 +625,7 @@ main(int argc, char **argv)
 
 	tarantool_L = tarantool_lua_init();
 	mod_init();
+	tarantool_lua_load_cfg(tarantool_L, &cfg);
 	admin_init();
 	replication_init();
 

@@ -56,7 +56,7 @@ of existing codes.</para>
   </varlistentry>
 
   <varlistentry>
-    <term xml:id="ER_NO_SUCH_NAMESPACE" xreflabel="ER_NO_SUCH_NAMESPACE">ER_NO_SUCH_NAMESPACE</term>
+    <term xml:id="ER_NO_SUCH_SPACE" xreflabel="ER_NO_SUCH_SPACE">ER_NO_SUCH_SPACE</term>
     <listitem><para>Attempt to access a space that is not
     configured (doesn't exist).
     </para></listitem>
@@ -65,6 +65,12 @@ of existing codes.</para>
   <varlistentry>
     <term xml:id="ER_NO_SUCH_INDEX" xreflabel="ER_NO_SUCH_INDEX">ER_NO_SUCH_INDEX</term>
     <listitem><para>No index with the given id exists.
+    </para></listitem>
+  </varlistentry>
+
+  <varlistentry>
+    <term xml:id="ER_PROC_LUA" xreflabel="ER_PROC_LUA">ER_PROC_LUA</term>
+    <listitem><para>An error inside Lua procedure.
     </para></listitem>
   </varlistentry>
 
