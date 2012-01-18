@@ -351,7 +351,7 @@ parse_update_cmd(struct tbuf *data)
 		op->arg.set.value = read_field(data);
 		op->arg.set.length = load_varint32(&op->arg.set.value);
 	}
-	/* check last data length, it must be fully read */
+	/* Check the remainder length, the request must be fully read. */
 	if (data->size != 0)
 		tnt_raise(IllegalParams, :"can't unpack request");
 
@@ -379,14 +379,14 @@ update_op_cmp(const void *op1_ptr, const void *op2_ptr)
 static void
 init_update_op_set(struct update_op *op, u32 field_len __attribute__((unused)))
 {
-	/* save fields length */
+	/* Save the new field length. */
 	op->new_field_len = op->arg.set.length;
 }
 
 static void
 init_update_op_arith(struct update_op *op, u32 field_len)
 {
-	/* check arguments */
+	/* Check the argument. */
 	if (field_len != sizeof(i32))
 		tnt_raise(ClientError, :ER_TYPE_MISMATCH,
 		       "field arithmetics: field type must be a 32-bit int");
@@ -395,10 +395,10 @@ init_update_op_arith(struct update_op *op, u32 field_len)
 		tnt_raise(ClientError, :ER_TYPE_MISMATCH,
 		       "field arithmetics: operand type must be a 32-bit int");
 
-	/* parse arith operands */
+	/* Parse the operands. */
 	op->arg.arith.size = op->arg.set.length;
 	op->arg.arith.i32_val = *(i32*)op->arg.set.value;
-	/* save fields length */
+	/* Save the new field length. */
 	op->new_field_len = op->arg.arith.size;
 }
 
@@ -412,8 +412,9 @@ init_update_op_splice(struct update_op *op, u32 field_len)
 		.pool = NULL
 	};
 
-	/* read offset */
+	/* Read the offset. */
 	void *offset_field = read_field(&operands);
+	/* Sic: overwrite of op->arg.set.length. */
 	op->arg.splice.offset = field_to_i32(offset_field);
 	if (op->arg.splice.offset < 0) {
 		if (-op->arg.splice.offset > field_len)
@@ -424,29 +425,29 @@ init_update_op_splice(struct update_op *op, u32 field_len)
 		op->arg.splice.offset = field_len;
 	}
 
-	/* read length */
+	/* Read the cut length. */
 	void *length_field = read_field(&operands);
 	op->arg.splice.length = field_to_i32(length_field);
 	if (op->arg.splice.length < 0) {
 		if (-op->arg.splice.length > (field_len - op->arg.splice.offset))
 			op->arg.splice.length = 0;
 		else
-			op->arg.splice.length = op->arg.splice.length
-				+ field_len - op->arg.splice.offset;
+			op->arg.splice.length = (op->arg.splice.length +
+						 field_len - op->arg.splice.offset);
 	} else if (op->arg.splice.length > (field_len - op->arg.splice.offset)) {
 		op->arg.splice.length = field_len - op->arg.splice.offset;
 	}
 
-	/* read list */
+	/* Read the paste. */
 	void *list_field = read_field(&operands);
 	op->arg.splice.list_length = load_varint32(&list_field);
 	op->arg.splice.list = list_field;
 
-	/* check last operands data length, it must be fully read */
+	/* Check that the operands are fully read. */
 	if (operands.size != 0)
 		tnt_raise(IllegalParams, :"field splice format error");
 
-	/* save fields length */
+	/* Save the new field length. */
 	op->new_field_len = op->arg.splice.offset;
 	op->new_field_len += op->arg.splice.list_length;
 	op->new_field_len += field_len - (op->arg.splice.offset + op->arg.splice.length);
@@ -455,7 +456,10 @@ init_update_op_splice(struct update_op *op, u32 field_len)
 static void
 init_update_operations(struct box_txn *txn, struct update_cmd *cmd)
 {
-	/* sort operations by fields  */
+	/*
+	 * Sort operations by field number and order within the
+	 * request.
+	 */
 	qsort(cmd->op, cmd->op_cnt, sizeof(struct update_op), update_op_cmp);
 
 	void *old_tuple_data = (uint8_t *)txn->old_tuple->data;
@@ -554,9 +558,9 @@ do_update_op_set(struct update_op *op, struct tbuf **field_ptr,
 
 	u32 new_field_len = varint32_sizeof(op->arg.set.length) + op->arg.set.length;
 	if (new_field_len > field->size) {
-		/* operation can not be apply in place, create separate buffer */
+		/* Operation can not be applied in place, create a separate buffer. */
 		if (*inplace) {
-			/* in this case new must create a new tbuf, because it was "fake" tbuf,
+			/* In this case we must create a new tbuf, because it was "fake" tbuf,
 			   witch placed in the new tuple */
 			field = tbuf_alloc(fiber->gc_pool);
 			*field_ptr = field;
@@ -565,7 +569,7 @@ do_update_op_set(struct update_op *op, struct tbuf **field_ptr,
 		tbuf_ensure(field, new_field_len);
 	}
 
-	/* copy new field */
+	/* Copy the new field */
 	void *field_value = save_varint32(field->data, op->arg.set.length);
 	memcpy(field_value, op->arg.set.value, op->arg.set.length);
 	field->size = new_field_len;
