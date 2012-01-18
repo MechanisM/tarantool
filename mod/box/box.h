@@ -123,13 +123,13 @@ ENUM(messages, MESSAGES);
  * update fields operations codes
  */
 #define UPDATE_OP_CODES(_)			\
-	_(UPDATE_SET_FIELD, 0)			\
-	_(UPDATE_ADD_INT, 1)			\
-	_(UPDATE_BIT_AND_INT, 2)		\
-	_(UPDATE_BIT_XOR_INT, 3)		\
-	_(UPDATE_BIT_OR_INT, 4)			\
-	_(UPDATE_SPLICE_STR, 5)			\
-	_(UPDATE_DELETE_FIELD, 6)		\
+	_(UPDATE_OP_SET, 0)			\
+	_(UPDATE_OP_ADD, 1)			\
+	_(UPDATE_OP_AND, 2)			\
+	_(UPDATE_OP_XOR, 3)			\
+	_(UPDATE_OP_OR, 4)			\
+	_(UPDATE_OP_SPLICE, 5)			\
+	_(UPDATE_OP_DELETE, 6)			\
 
 ENUM(update_op_codes, UPDATE_OP_CODES);
 

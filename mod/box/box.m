@@ -344,7 +344,7 @@ parse_update_cmd(struct tbuf *data)
 	/* read update operations */
 	cmd->op = palloc(fiber->gc_pool, cmd->op_cnt * sizeof(struct update_op));
 	struct update_op *op = cmd->op;
-	for (; op < cmd->op + < cmd->op_cnt; ++op) {
+	for (; op < cmd->op + cmd->op_cnt; op++) {
 		/* read operation */
 		op->field_no = read_u32(data);
 		op->opcode = read_u8(data);
@@ -495,26 +495,26 @@ init_update_operations(struct box_txn *txn, struct update_cmd *cmd)
 				break;
 			}
 
-			if (!field_exists && op->opcode != UPDATE_SET_FIELD)
+			if (!field_exists && op->opcode != UPDATE_OP_SET)
 				tnt_raise(ClientError, :ER_NO_SUCH_FIELD, op->field_no);
 
 			op->skip = false;
 			switch (op->opcode) {
-			case UPDATE_SET_FIELD:
+			case UPDATE_OP_SET:
 				init_update_op_set(op, field_len);
 				op_useful = op_no;
 				field_exists = true;
 				break;
-			case UPDATE_ADD_INT:
-			case UPDATE_BIT_AND_INT:
-			case UPDATE_BIT_XOR_INT:
-			case UPDATE_BIT_OR_INT:
+			case UPDATE_OP_ADD:
+			case UPDATE_OP_AND:
+			case UPDATE_OP_XOR:
+			case UPDATE_OP_OR:
 				init_update_op_arith(op, field_len);
 				break;
-			case UPDATE_SPLICE_STR:
+			case UPDATE_OP_SPLICE:
 				init_update_op_splice(op, field_len);
 				break;
-			case UPDATE_DELETE_FIELD:
+			case UPDATE_OP_DELETE:
 				op->new_field_len = 0;
 				op_useful = op_no;
 				field_exists = false;
@@ -578,16 +578,16 @@ do_update_op_arith(struct update_op *op, struct tbuf **field_ptr,
 	struct tbuf *field = *field_ptr;
 	void *field_value = field->data + varint32_sizeof(field->size);
 	switch (op->opcode) {
-	case UPDATE_ADD_INT:
+	case UPDATE_OP_ADD:
 		*(i32 *)field_value += op->arg.arith.i32_val;
 		break;
-	case UPDATE_BIT_AND_INT:
+	case UPDATE_OP_AND:
 		*(u32 *)field_value &= op->arg.arith.i32_val;
 		break;
-	case UPDATE_BIT_XOR_INT:
+	case UPDATE_OP_XOR:
 		*(u32 *)field_value ^= op->arg.arith.i32_val;
 		break;
-	case UPDATE_BIT_OR_INT:
+	case UPDATE_OP_OR:
 		*(u32 *)field_value |= op->arg.arith.i32_val;
 		break;
 	}
@@ -708,20 +708,20 @@ do_update(struct box_txn *txn, struct update_cmd *cmd)
 				goto next_operaion;
 
 			switch (op->opcode) {
-			case UPDATE_SET_FIELD:
+			case UPDATE_OP_SET:
 				do_update_op_set(op, &field, &inplace);
 				field_exists = true;
 				break;
-			case UPDATE_ADD_INT:
-			case UPDATE_BIT_AND_INT:
-			case UPDATE_BIT_XOR_INT:
-			case UPDATE_BIT_OR_INT:
+			case UPDATE_OP_ADD:
+			case UPDATE_OP_AND:
+			case UPDATE_OP_XOR:
+			case UPDATE_OP_OR:
 				do_update_op_arith(op, &field, &inplace);
 				break;
-			case UPDATE_SPLICE_STR:
+			case UPDATE_OP_SPLICE:
 				do_update_op_splice(op, &field, &inplace);
 				break;
-			case UPDATE_DELETE_FIELD:
+			case UPDATE_OP_DELETE:
 				field_exists = false;
 				break;
 			}
