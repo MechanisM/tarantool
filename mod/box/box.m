@@ -59,17 +59,8 @@ struct op_set_arg {
 struct op_arith_arg {
 	/** arith value size */
 	u32 size;
-	union {
-		/** 8-bit value */
-		i8 i8_val;
-		/** 16-bit value */
-		i16 i16_val;
-		/** 32-bit value */
-		i32 i32_val;
-		/** 64 bit value */
-		i64 i64_val;
-	};
-} arith;
+	i32 i32_val;
+};
 
 /** splice operands */
 struct op_splice_arg {
@@ -427,8 +418,8 @@ parse_update_operations_splice(struct update_op *op, u32 field_len)
 	op->arg.splice.offset = field_to_i32(offset_field);
 	if (op->arg.splice.offset < 0) {
 		if (-op->arg.splice.offset > field_len)
-			tnt_raise(ClientError, :ER_INVALID_CMD_FORMAT,
-				  "operation splice: offset is out of bound");
+			tnt_raise(ClientError, :ER_SPLICE,
+				  "offset is out of bound");
 		op->arg.splice.offset = op->arg.splice.offset + field_len;
 	} else if (op->arg.splice.offset > field_len) {
 		op->arg.splice.offset = field_len;
@@ -454,8 +445,7 @@ parse_update_operations_splice(struct update_op *op, u32 field_len)
 
 	/* check last operands data length, it must be fully read */
 	if (operands.size != 0)
-		tnt_raise(ClientError, :ER_INVALID_CMD_FORMAT,
-			  "operation splice: bad operands");
+		tnt_raise(IllegalParams, :"field splice format error");
 
 	/* save fields length */
 	op->new_field_len = op->arg.splice.offset;
@@ -531,8 +521,8 @@ parse_update_operations(struct box_txn *txn, struct update_fields_cmd *cmd)
 				field_exist = false;
 				break;
 			default:
-				tnt_raise(ClientError, :ER_INVALID_CMD_FORMAT,
-					  "operation code is not in range [0..6]");
+				tnt_raise(ClientError, :ER_UNKNOWN_UPDATE_OP,
+					  (int) op->opcode);
 			}
 			field_len = op->new_field_len;
 

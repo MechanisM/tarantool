@@ -95,9 +95,9 @@ enum { TNT_ERRMSG_MAX = 512 };
 		/* end of silversearch error codes */					\
 	/* 39 */_(ER_WAL_IO,			2, "Failed to write to disk") \
 	/* 40 */_(ER_TYPE_MISMATCH,		2, "Type mismatch: %s") \
-	/* 41 */_(ER_INVALID_CMD_FORMAT,	2, "Invalid command format: %s") \
+	/* 41 */_(ER_SPLICE,			2, "Field splice error: %s") \
 	/* 42 */_(ER_TUPLE_IS_TOO_LONG,		2, "Tuple is too long %u") \
-	/* 43 */_(ER_UNUSED43,			0, "Unused43") \
+	/* 43 */_(ER_UNKNOWN_UPDATE_OP,		2, "Unknown UPDATE operation: %d") \
 	/* 44 */_(ER_UNUSED44,			0, "Unused44") \
 	/* 45 */_(ER_UNUSED45,			0, "Unused45") \
 	/* 46 */_(ER_UNUSED46,			0, "Unused46") \
