@@ -48,50 +48,45 @@
 #include "memcached.h"
 #include "box_lua.h"
 
+struct op_set_arg {
+	/** set length */
+	u32 length;
+	/** set value */
+	void *value;
+};
 
-struct op_arg {
+/** arith operands */
+struct op_arith_arg {
+	/** arith value size */
+	u32 size;
 	union {
-		/** set operands */
-		struct {
-			/** set length */
-			u32 length;
-			/** set value */
-			void *value;
-		} set;
-		/** arith operands */
-		struct {
-			union {
-				/** 8-bit value */
-				i8 i8_val;
-				/** 16-bit value */
-				i16 i16_val;
-				/** 32-bit value */
-				i32 i32_val;
-				/** 64 bit value */
-				i64 i64_val;
-			};
-			/** arith value size */
-			u32 size;
-		} arith;
-		/** splice operands */
-		struct {
-			/** splice position */
-			i32 offset;
-			/** cut length */
-			i32 length;
-			/** paste list length */
-			i32 list_length;
-			/** paste list */
-			void *list;
-		} splice;
+		/** 8-bit value */
+		i8 i8_val;
+		/** 16-bit value */
+		i16 i16_val;
+		/** 32-bit value */
+		i32 i32_val;
+		/** 64 bit value */
+		i64 i64_val;
 	};
-	/** raw operand data */
-	struct {
-		/** raw length */
-		u32 length;
-		/** raw value */
-		void *value;
-	} raw;
+} arith;
+
+/** splice operands */
+struct op_splice_arg {
+	/** splice position */
+	i32 offset;
+	/** cut length */
+	i32 length;
+	/** paste list length */
+	i32 list_length;
+	/** paste list */
+	void *list;
+};
+
+union op_arg {
+	struct op_set_arg set;
+	struct op_arith_arg arith;
+	struct op_splice_arg splice;
 };
 
 /** update fields operation */
@@ -103,7 +98,7 @@ struct update_op {
 	/* skip this operation */
 	bool skip;
 	/** operands */
-	struct op_arg arg;
+	union op_arg arg;
 	/** field length after apply operation */
 	u32 new_field_len;
 };
@@ -363,8 +358,8 @@ parse_update_fields_command(struct tbuf *data)
 		/* read operation */
 		op->field_no = read_u32(data);
 		op->opcode = read_u8(data);
-		op->arg.raw.value = read_field(data);
-		op->arg.raw.length = load_varint32(&op->arg.raw.value);
+		op->arg.set.value = read_field(data);
+		op->arg.set.length = load_varint32(&op->arg.set.value);
 	}
 	/* check last data length, it must be fully read */
 	if (data->size != 0)
@@ -384,9 +379,9 @@ update_op_cmp(const void *op1_ptr, const void *op2_ptr)
 	if (op1->field_no > op2->field_no)
 		return 1;
 
-	if (op1->arg.raw.value < op2->arg.raw.value)
+	if (op1->arg.set.value < op2->arg.set.value)
 		return -1;
-	if (op1->arg.raw.value > op2->arg.raw.value)
+	if (op1->arg.set.value > op2->arg.set.value)
 		return 1;
 	return 0;
 }
@@ -394,9 +389,6 @@ update_op_cmp(const void *op1_ptr, const void *op2_ptr)
 static void
 parse_update_operations_set(struct update_op *op, u32 field_len __attribute__((unused)))
 {
-	/* parse set operands */
-	op->arg.set.length = op->arg.raw.length;
-	op->arg.set.value = op->arg.raw.value;
 	/* save fields length */
 	op->new_field_len = op->arg.set.length;
 }
@@ -409,13 +401,13 @@ parse_update_operations_arith(struct update_op *op, u32 field_len)
 		tnt_raise(ClientError, :ER_TYPE_MISMATCH,
 		       "operation atirh: field type shoud be int32");
 
-	if (op->arg.raw.length != sizeof(i32))
+	if (op->arg.set.length != sizeof(i32))
 		tnt_raise(ClientError, :ER_TYPE_MISMATCH,
 		       "operation atirh: operand type shoud be int32");
 
 	/* parse arith operands */
-	op->arg.arith.size = op->arg.raw.length;
-	op->arg.arith.i32_val = *(i32*)op->arg.raw.value;
+	op->arg.arith.size = op->arg.set.length;
+	op->arg.arith.i32_val = *(i32*)op->arg.set.value;
 	/* save fields length */
 	op->new_field_len = op->arg.arith.size;
 }
@@ -424,9 +416,9 @@ static void
 parse_update_operations_splice(struct update_op *op, u32 field_len)
 {
 	struct tbuf operands = {
-		.capacity = op->arg.raw.length,
-		.size = op->arg.raw.length,
-		.data = op->arg.raw.value,
+		.capacity = op->arg.set.length,
+		.size = op->arg.set.length,
+		.data = op->arg.set.value,
 		.pool = NULL
 	};
 
@@ -498,12 +490,11 @@ parse_update_operations(struct box_txn *txn, struct update_fields_cmd *cmd)
 				tnt_raise(ClientError, :ER_NO_SUCH_FIELD, op->field_no);
 			old_field_len = 0;
 			field_exist = false;
-
 		}
 		u32 field_len = old_field_len;
 
 		int op_begin = op_no;
-		int op_usefull = op_no;
+		int op_useful = op_no;
 		while (op_no < cmd->op_cnt) {
 			struct update_op *op = &cmd->op[op_no];
 
@@ -522,7 +513,7 @@ parse_update_operations(struct box_txn *txn, struct update_fields_cmd *cmd)
 			switch (op->opcode) {
 			case UPDATE_SET_FIELD:
 				parse_update_operations_set(op, field_len);
-				op_usefull = op_no;
+				op_useful = op_no;
 				field_exist = true;
 				break;
 			case UPDATE_ADD_INT:
@@ -536,7 +527,7 @@ parse_update_operations(struct box_txn *txn, struct update_fields_cmd *cmd)
 				break;
 			case UPDATE_DELETE_FIELD:
 				op->new_field_len = 0;
-				op_usefull = op_no;
+				op_useful = op_no;
 				field_exist = false;
 				break;
 			default:
@@ -549,7 +540,7 @@ parse_update_operations(struct box_txn *txn, struct update_fields_cmd *cmd)
 		}
 
 		/* skip all useless operations */
-		for (u32 op_useless = op_begin; op_useless < op_usefull; ++op_useless)
+		for (u32 op_useless = op_begin; op_useless < op_useful; ++op_useless)
 			cmd->op[op_useless].skip = true;
 
 		if (field_exist)
