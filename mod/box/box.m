@@ -106,6 +106,9 @@ struct update_cmd {
 	u32 key_cardinality;
 	/** new tuple length after apply all operations */
 	u32 new_tuple_len;
+	/* Copy field data from the old tuple up to the first
+	 * field participating in the update. */
+	u32 copy_len;
 };
 
 static void box_process_ro(u32 op, struct tbuf *request_data);
@@ -462,10 +465,20 @@ init_update_operations(struct box_txn *txn, struct update_cmd *cmd)
 	 */
 	qsort(cmd->op, cmd->op_cnt, sizeof(struct update_op), update_op_cmp);
 
-	void *old_tuple_data = (uint8_t *)txn->old_tuple->data;
-	u32 op_no = 0;
+	void *old_tuple_data = txn->old_tuple->data;
 	u32 field_no = 0;
-	u32 new_tuple_len = 0;
+	/* Skip all fields till the first changed one. */
+	for (; field_no < cmd->op->field_no &&
+	     field_no < txn->old_tuple->cardinality;
+	     field_no++) {
+
+		u32 old_field_len = load_varint32(&old_tuple_data);
+		old_tuple_data += old_field_len;
+	}
+	cmd->copy_len = old_tuple_data - (void *) txn->old_tuple->data;
+
+	u32 op_no = 0;
+	u32 new_tuple_len = cmd->copy_len;
 	while (op_no < cmd->op_cnt || field_no < txn->old_tuple->cardinality) {
 		u32 old_field_len;
 		bool field_exists;
@@ -492,10 +505,10 @@ init_update_operations(struct box_txn *txn, struct update_cmd *cmd)
 			struct update_op *op = &cmd->op[op_no];
 
 			/* since the operations are ordered with respect to
-			   field number operation field number must be grater
-			   or equal current field number */
+			   field number operation field number must be greater
+			   or equal to the current field number */
 			if (op->field_no > field_no) {
-				/* no more operation for this field */
+				/* No more operations for this field. */
 				break;
 			}
 
@@ -643,10 +656,14 @@ do_update(struct box_txn *txn, struct update_cmd *cmd)
 		.data = txn->tuple->data,
 		.pool = NULL
 	};
+	/* Copy the unchanged fields. */
+	memcpy(tuple.data, old_tuple.data, cmd->copy_len);
+	tuple.data += cmd->copy_len;
+	tuple.size -= cmd->copy_len;
+	txn->tuple->cardinality = cmd->op->field_no;
 
-	txn->tuple->cardinality = 0;
 	u32 op_no = 0;
-	u32 field_no = 0;
+	u32 field_no = cmd->op->field_no;
 	while (op_no < cmd->op_cnt || field_no < txn->old_tuple->cardinality) {
 		struct tbuf inplace_field;
 		struct tbuf *field;
@@ -701,8 +718,12 @@ do_update(struct box_txn *txn, struct update_cmd *cmd)
 		while (op_no < cmd->op_cnt) {
 			struct update_op *op = &cmd->op[op_no];
 
-			/* since the operations are ordered with respect to field number
-			  operation field number must be grater or equal current field number */
+			/*
+			 * Since operations are ordered by field
+			 * number, operation field number must be
+			 * greater or equal to the current field
+			 * number.
+			 */
 			if (op->field_no > field_no) {
 				/* no more operation for this field */
 				break;
