@@ -140,11 +140,11 @@
 }
 
 {
-   <box upadte command>
+   <box update command>
    Memcheck:Leak
    fun:salloc
    fun:tuple_alloc
-   fun:prepare_update
+   fun:prepare_update_fields
    fun:box_dispatch
    fun:box_process*
    ...
