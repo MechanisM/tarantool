@@ -554,7 +554,7 @@ do_update_op_set(struct update_op *op, struct tbuf **field_ptr,
 	struct tbuf *field = *field_ptr;
 
 	u32 new_field_len = varint32_sizeof(op->arg.set.length) + op->arg.set.length;
-	if (new_field_len > field->size) {
+	if (new_field_len > field->capacity) {
 		/* operation can not be apply in place, create separate buffer */
 		if (*inplace) {
 			/* in this case new must create a new tbuf, because it was "fake" tbuf,
